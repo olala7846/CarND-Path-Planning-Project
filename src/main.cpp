@@ -5,6 +5,7 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <deque>
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "Eigen-3.3/Eigen/Dense"
@@ -22,6 +23,10 @@ using Eigen::VectorXd;
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
+
+
+// save previous frenet trajectory globally
+vector<deque<double>> prev_frenet_trajectory;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -240,7 +245,7 @@ double poly_eval(double x, vector<double> coeffs) {
   return result;
 }
 
-vector<vector<vector<double>>> generate_trajectories(
+vector<vector<double>> generate_trajectories(
     string behavior, const json &car, const json &sensor_fusion,
     vector<double> maps_s, vector<double> maps_x, vector<double> maps_y,
     vector<double> maps_dx, vector<double> maps_dy) {
@@ -269,13 +274,14 @@ vector<vector<vector<double>>> generate_trajectories(
     double end_path_s = car["end_path_s"];
     double end_path_d = car["end_path_d"];
 
-    // 40 mph ~= 17.88 mps
-    double target_s = car_s + t * 17.88;
     // double target_d = round(car_d);
     double target_d = 6.0;
     double target_speed = 17.88;
 
     if (previous_path_x.size() <= 3){
+
+      // 40 mph ~= 17.88 mps
+      double target_s = car_s + t * 17.88;
 
       vector<double> start_s = {car_s, car_speed, 0.0};
       vector<double> end_s = {target_s, target_speed, 0.0};
@@ -285,29 +291,97 @@ vector<vector<vector<double>>> generate_trajectories(
       vector<double> end_d = {target_d, 0.0, 0.0};
       auto d_trajectory_coeff = JMT(start_d, end_d, t);
 
+      deque<double> next_s_vals;
+      deque<double> next_d_vals;
       vector<double> next_x_vals;
       vector<double> next_y_vals;
 
       for(double i=time_step; i<= t; i+= time_step){
         double s = poly_eval(i, s_trajectory_coeff);
         double d = poly_eval(i, d_trajectory_coeff);
+        next_s_vals.push_back(s);
+        next_d_vals.push_back(d);
         vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
         next_x_vals.push_back(point[0]);
         next_y_vals.push_back(point[1]);
       }
       vector<vector<double>> trajectory = {next_x_vals, next_y_vals};
       trajectories.push_back(trajectory);
+
+      prev_frenet_trajectory.clear();
+      prev_frenet_trajectory.push_back(next_s_vals);
+      prev_frenet_trajectory.push_back(next_d_vals);
     } else {
+      auto prev_s_vals = prev_frenet_trajectory[0];
+      auto prev_d_vals = prev_frenet_trajectory[1];
+
+      deque<double> next_s_vals;
+      deque<double> next_d_vals;
+
+      // remove consumed trajectories
+      for(int i=0; i< previous_path_x.size() - prev_s_vals.size(); i++) {
+          prev_s_vals.pop_front();
+          prev_d_vals.pop_front();
+      }
+
+      int steps_to_keep = 5;
+      vector<double> next_x_vals;
+      vector<double> next_y_vals;
+
+      for (int i=0; i<steps_to_keep; i++) {
+        next_s_vals.push_back(prev_s_vals[i]);
+        next_d_vals.push_back(prev_d_vals[i]);
+        next_x_vals.push_back(previous_path_x[i]);
+        next_y_vals.push_back(previous_path_y[i]);
+      }
+
+      double s5 = prev_s_vals[steps_to_keep-1];
+      double s4 = prev_s_vals[steps_to_keep-2];
+      double s3 = prev_s_vals[steps_to_keep-3];
+      double d5 = prev_d_vals[steps_to_keep-1];
+      double d4 = prev_d_vals[steps_to_keep-2];
+      double d3 = prev_d_vals[steps_to_keep-3];
+
+      double vs5 = (s5 - s4) / time_step;
+      double vs4 = (s4 - s3) / time_step;
+
+      double vd5 = (d5 - d4) / time_step;
+      double vd4 = (d4 - d3) / time_step;
+
+      double as5 = (vs5 - vs4) / time_step;
+      double ad5 = (vd5 - vd4) / time_step;
+
+      // 40 mph ~= 17.88 mps
+      double target_s = s5 + t * 17.88;
+
+      vector<double> start_s = {s5, vs5, as5};
+      vector<double> end_s = {target_s, target_speed, 0.0};
+      auto s_trajectory_coeff = JMT(start_s, end_s, t);
+
+      vector<double> start_d = {d5, vd5, ad5};
+      vector<double> end_d = {target_d, 0.0, 0.0};
+      auto d_trajectory_coeff = JMT(start_d, end_d, t);
+
+      for(double i=time_step; i<t; i+= time_step){
+        double s = poly_eval(i, s_trajectory_coeff);
+        double d = poly_eval(i, d_trajectory_coeff);
+        next_s_vals.push_back(s);
+        next_d_vals.push_back(d);
+        vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
+        next_x_vals.push_back(point[0]);
+        next_y_vals.push_back(point[1]);
+      }
+
+      prev_frenet_trajectory.clear();
+      prev_frenet_trajectory.push_back(next_s_vals);
+      prev_frenet_trajectory.push_back(next_d_vals);
+
       // TODO(Olala): Keep some old waypoints and generate new waypoints
-      vector<vector<double>> trajectory = {previous_path_x, previous_path_y};
+      vector<vector<double>> trajectory = {next_x_vals, next_y_vals};
       trajectories.push_back(trajectory);
     }
 
   }
-  return trajectories;
-}
-
-vector<vector<double>> find_best_trajectory(vector<vector<vector<double>>> &trajectories, const json &sensor_fusion) {
   return trajectories[0];
 }
 
@@ -351,8 +425,10 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy, &current_behavior](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
-                     uWS::OpCode opCode) {
+  h.onMessage([
+      &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,
+      &current_behavior](
+        uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
@@ -361,7 +437,6 @@ int main() {
     if (length && length > 2 && data[0] == '4' && data[1] == '2') {
 
       auto s = hasData(data);
-
 
       if (s != "") {
         auto j = json::parse(s);
@@ -402,10 +477,9 @@ int main() {
           current_behavior = new_behavior;
 
           // Trajectory Genereation
-          auto trajectories = generate_trajectories(
+          auto best_trajectory = generate_trajectories(
               current_behavior, j[1], sensor_fusion, map_waypoints_s, map_waypoints_x, map_waypoints_y,
               map_waypoints_dx, map_waypoints_dy);
-          auto best_trajectory = find_best_trajectory(trajectories, sensor_fusion);
           next_x_vals = best_trajectory[0];
           next_y_vals = best_trajectory[1];
 
