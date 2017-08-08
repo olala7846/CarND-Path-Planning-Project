@@ -155,18 +155,39 @@ vector<double> getXY(double s, double d, vector<double> maps_s,
 
   // calculate XY with spline
   int spline_points = 6;
+  int map_size = maps_x.size();
   vector<double> X(spline_points), Y(spline_points);
   for(int i=0; i < spline_points; i++) {
-    int wp = (prev_wp + i - 2) % maps_x.size();
+    int wp = (prev_wp + i + map_size - 2) % map_size;
     X[i] = maps_x[wp];
     Y[i] = maps_y[wp];
   }
 
+  // affine transformation
+  double x0 = X[0];
+  double y0 = Y[0];
+  double theta = atan2(Y[1] - Y[0], X[1] - X[0]);
+
+  vector<double> _X(spline_points), _Y(spline_points);
+  for(int i = 0; i < spline_points; i++) {
+    // translate P0 to origin
+    double x_t = X[i] - x0;
+    double y_t = Y[i] - y0;
+    _X[i] = x_t * cos(-theta) - y_t * sin(-theta);
+    _Y[i] = x_t * sin(-theta) + y_t * cos(-theta);
+  }
+
+  // fit spline
   tk::spline spline_func;
-  spline_func.set_points(X, Y);
-  double ratio = (s - maps_s[prev_wp])/(maps_s[wp2]-maps_s[prev_wp]);
-  double x = maps_x[prev_wp] + (maps_x[wp2] - maps_x[prev_wp]) * ratio;
-  double y = spline_func(x);
+  spline_func.set_points(_X, _Y);
+  double ratio = (s - maps_s[prev_wp]) / (maps_s[wp2]-maps_s[prev_wp]);
+  double _x = _X[2] + (_X[3] - _X[2]) * ratio;
+  double _y = spline_func(_x);
+
+  double x, y;
+  // revert affine transformation
+  x = x0 + _x * cos(theta) - _y * sin(theta);
+  y = y0 + _x * sin(theta) + _y * cos(theta);
 
   // add d * unit norm vector
   double nx = maps_dx[prev_wp] + ratio * (maps_dx[wp2] - maps_dx[prev_wp]);
@@ -534,83 +555,4 @@ int main() {
   }
   h.run();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
