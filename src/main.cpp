@@ -267,87 +267,77 @@ double poly_eval(double x, vector<double> coeffs) {
 }
 
 vector<vector<double>> generate_trajectories(
-    string behavior, const json &car, const json &sensor_fusion,
+    double target_s, double target_speed, int target_lane,
+    double time_to_goal, const json &car, const json &sensor_fusion,
     vector<double> maps_s, vector<double> maps_x, vector<double> maps_y,
     vector<double> maps_dx, vector<double> maps_dy) {
 
   const double time_step = 0.02;
+  const double time_to_predict = 2.5;  // only predict 2 seconds ahead
+  const double time_use_predicted = 1.0;  // keep 1 second of predicted path
+
   vector<vector<vector<double>>> trajectories;
+  vector<vector<deque<double>>> frenet_trajectories;
 
-  if (behavior.compare("full_speed_ahead") == 0){
-    // should reach target config state in t seconds
-    double t = 2.0;
+  double car_x = car["x"];
+  double car_y = car["y"];
+  double car_s = car["s"];
+  double car_d = car["d"];
+  double car_yaw = car["yaw"];
+  double car_speed = car["speed"];
 
-    double car_x = car["x"];
-    double car_y = car["y"];
-    double car_s = car["s"];
-    double car_d = car["d"];
-    double car_yaw = car["yaw"];
-    double car_speed = car["speed"];
-    // mph to meter per second
-    car_speed = car_speed * 0.44704;
+  car_speed = car_speed * 0.44704;  // 1 mph = 0.44704 m/s
 
-    // Previous path data given to the Planner
-    auto previous_path_x = car["previous_path_x"];
-    auto previous_path_y = car["previous_path_y"];
+  auto previous_path_x = car["previous_path_x"];
+  auto previous_path_y = car["previous_path_y"];
 
-    // Previous path's end s and d values
-    double end_path_s = car["end_path_s"];
-    double end_path_d = car["end_path_d"];
+  // Previous path's end s and d values
+  double end_path_s = car["end_path_s"];
+  double end_path_d = car["end_path_d"];
 
-    // double target_d = round(car_d);
-    double target_d = 6.0;
-    double target_speed = 17.88;
+  double target_d = target_lane * 4.0 + 2.0;
 
-    if (previous_path_x.size() <= 3){
+  deque<double> next_s_vals;
+  deque<double> next_d_vals;
 
-      // 40 mph ~= 17.88 mps
-      double target_s = car_s + t * 17.88;
+  vector<double> next_x_vals;
+  vector<double> next_y_vals;
+
+  for(double dt=-1.0; dt <= 1.0; dt += 0.1) {
+
+    if (previous_path_x.size() <= 3){  // generate trajectory from scratch
 
       vector<double> start_s = {car_s, car_speed, 0.0};
       vector<double> end_s = {target_s, target_speed, 0.0};
-      auto s_trajectory_coeff = JMT(start_s, end_s, t);
+      auto s_trajectory_coeff = JMT(start_s, end_s, time_to_goal);
 
       vector<double> start_d = {car_d, 0.0, 0.0};
       vector<double> end_d = {target_d, 0.0, 0.0};
-      auto d_trajectory_coeff = JMT(start_d, end_d, t);
+      auto d_trajectory_coeff = JMT(start_d, end_d, time_to_goal);
 
-      deque<double> next_s_vals;
-      deque<double> next_d_vals;
-      vector<double> next_x_vals;
-      vector<double> next_y_vals;
-
-      for(double i=time_step; i<= t; i+= time_step){
-        double s = poly_eval(i, s_trajectory_coeff);
-        double d = poly_eval(i, d_trajectory_coeff);
+      for(double t=time_step; t<= time_to_predict; t+= time_step){
+        double s = poly_eval(t, s_trajectory_coeff);
+        double d = poly_eval(t, d_trajectory_coeff);
         next_s_vals.push_back(s);
         next_d_vals.push_back(d);
         vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
         next_x_vals.push_back(point[0]);
         next_y_vals.push_back(point[1]);
       }
-      vector<vector<double>> trajectory = {next_x_vals, next_y_vals};
-      trajectories.push_back(trajectory);
 
-      prev_frenet_trajectory.clear();
-      prev_frenet_trajectory.push_back(next_s_vals);
-      prev_frenet_trajectory.push_back(next_d_vals);
-    } else {
+
+    } else {  // use some previous generated trajectory
+
       auto prev_s_vals = prev_frenet_trajectory[0];
       auto prev_d_vals = prev_frenet_trajectory[1];
 
-      deque<double> next_s_vals;
-      deque<double> next_d_vals;
-
-      // remove consumed trajectories
+      // remove trajectories that already been comsumed
       for(int i=0; i< previous_path_x.size() - prev_s_vals.size(); i++) {
           prev_s_vals.pop_front();
           prev_d_vals.pop_front();
       }
 
-      int steps_to_keep = 5;
-      vector<double> next_x_vals;
-      vector<double> next_y_vals;
+      int steps_to_keep = (time_use_predicted + 0.01) / time_step;
 
       for (int i=0; i<steps_to_keep; i++) {
         next_s_vals.push_back(prev_s_vals[i]);
@@ -356,6 +346,7 @@ vector<vector<double>> generate_trajectories(
         next_y_vals.push_back(previous_path_y[i]);
       }
 
+      // start JMT from the last config
       double s5 = prev_s_vals[steps_to_keep-1];
       double s4 = prev_s_vals[steps_to_keep-2];
       double s3 = prev_s_vals[steps_to_keep-3];
@@ -372,20 +363,17 @@ vector<vector<double>> generate_trajectories(
       double as5 = (vs5 - vs4) / time_step;
       double ad5 = (vd5 - vd4) / time_step;
 
-      // 40 mph ~= 17.88 mps
-      double target_s = s5 + t * 17.88;
-
       vector<double> start_s = {s5, vs5, as5};
       vector<double> end_s = {target_s, target_speed, 0.0};
-      auto s_trajectory_coeff = JMT(start_s, end_s, t);
+      auto s_trajectory_coeff = JMT(start_s, end_s, time_to_goal);
 
       vector<double> start_d = {d5, vd5, ad5};
       vector<double> end_d = {target_d, 0.0, 0.0};
-      auto d_trajectory_coeff = JMT(start_d, end_d, t);
+      auto d_trajectory_coeff = JMT(start_d, end_d, time_to_goal);
 
-      for(double i=time_step; i<t; i+= time_step){
-        double s = poly_eval(i, s_trajectory_coeff);
-        double d = poly_eval(i, d_trajectory_coeff);
+      for(double t=time_step; t <= ( time_to_predict - time_use_predicted) ; t += time_step){
+        double s = poly_eval(t, s_trajectory_coeff);
+        double d = poly_eval(t, d_trajectory_coeff);
         next_s_vals.push_back(s);
         next_d_vals.push_back(d);
         vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
@@ -393,16 +381,23 @@ vector<vector<double>> generate_trajectories(
         next_y_vals.push_back(point[1]);
       }
 
-      prev_frenet_trajectory.clear();
-      prev_frenet_trajectory.push_back(next_s_vals);
-      prev_frenet_trajectory.push_back(next_d_vals);
-
-      // TODO(Olala): Keep some old waypoints and generate new waypoints
-      vector<vector<double>> trajectory = {next_x_vals, next_y_vals};
-      trajectories.push_back(trajectory);
     }
 
+    vector<deque<double>> frenet_trajectory = {next_s_vals, next_d_vals};
+    frenet_trajectories.push_back(frenet_trajectory);
+
+    vector<vector<double>> trajectory = {next_x_vals, next_y_vals};
+    trajectories.push_back(trajectory);
+
   }
+
+  auto best_trajectory = trajectories[0];
+  auto best_frenet_trajectory = frenet_trajectories[0];
+
+  prev_frenet_trajectory.clear();
+  prev_frenet_trajectory.push_back(best_frenet_trajectory[0]);
+  prev_frenet_trajectory.push_back(best_frenet_trajectory[1]);
+
   return trajectories[0];
 }
 
@@ -497,10 +492,15 @@ int main() {
           string new_behavior = get_behavior(current_behavior, sensor_fusion);
           current_behavior = new_behavior;
 
+          double target_speed = 49.0 * 0.44704; // to meters per second
+          double T = 4.0;
+          double target_s = car_s + T * (target_speed - 0.1);
+          int target_lane = 1;
+
           // Trajectory Genereation
           auto best_trajectory = generate_trajectories(
-              current_behavior, j[1], sensor_fusion, map_waypoints_s, map_waypoints_x, map_waypoints_y,
-              map_waypoints_dx, map_waypoints_dy);
+              target_s, target_speed, target_lane, T, j[1], sensor_fusion,
+              map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy);
           next_x_vals = best_trajectory[0];
           next_y_vals = best_trajectory[1];
 
