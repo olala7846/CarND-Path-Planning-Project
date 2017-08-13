@@ -33,6 +33,7 @@ const double MAX_JERK = 10.0;
 
 // save previous frenet trajectory globally
 vector<deque<double>> prev_frenet_trajectory;
+vector<tk::spline> global_splines;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -146,10 +147,50 @@ vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x
 
 }
 
+void generate_splines(vector<double> maps_x, vector<double> maps_y) {
+  int num_points = maps_x.size();
+  for(int i = 0; i< num_points; i++) {
+    // fit spline with 6 points
+    // the target point is p2
+    int p0 = (i - 2 + num_points) % num_points;
+    int p1 = (i - 1 + num_points) % num_points;
+    int p2 = (i + num_points) % num_points;
+    int p3 = (i + 1 + num_points) % num_points;
+    int p4 = (i + 2 + num_points) % num_points;
+    int p5 = (i + 3 + num_points) % num_points;
+
+    vector<double> X = {maps_x[p0], maps_x[p1], maps_x[p2], maps_x[p3], maps_x[p4], maps_x[p5]};
+    vector<double> Y = {maps_y[p0], maps_y[p1], maps_y[p2], maps_y[p3], maps_y[p4], maps_y[p5]};
+
+    // affine transformation
+    double x_shift = X[2];
+    double y_shift = Y[2];
+    double theta = atan2(Y[3] - Y[2], X[3] - X[2]);
+
+    int num_spline_points = X.size();
+    vector<double> _X(num_spline_points), _Y(num_spline_points);
+    for(int i = 0; i < num_spline_points; i++) {
+      // translate P0 to origin
+      double x_t = X[i] - x_shift;
+      double y_t = Y[i] - y_shift;
+      _X[i] = x_t * cos(-theta) - y_t * sin(-theta);
+      _Y[i] = x_t * sin(-theta) + y_t * cos(-theta);
+    }
+
+    tk::spline spline_func;
+    spline_func.set_points(_X, _Y);
+    global_splines.push_back(spline_func);
+  }
+}
+
 // Transform from Frenet s,d coordinates to Cartesian x,y
 vector<double> getXY(double s, double d, vector<double> maps_s,
     vector<double> maps_x, vector<double> maps_y, vector<double> maps_dx, vector<double> maps_dy)
 {
+  int num_points = maps_x.size();
+  // should generate splines before getXY;
+  assert(num_points == global_splines.size());
+
 	int prev_wp = -1;
 
 	while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) ))
@@ -159,35 +200,20 @@ vector<double> getXY(double s, double d, vector<double> maps_s,
 
 	int wp2 = (prev_wp+1)%maps_x.size();
 
-  // calculate XY with spline
-  int spline_points = 6;
-  int map_size = maps_x.size();
-  vector<double> X(spline_points), Y(spline_points);
-  for(int i=0; i < spline_points; i++) {
-    int wp = (prev_wp + i + map_size - 2) % map_size;
-    X[i] = maps_x[wp];
-    Y[i] = maps_y[wp];
-  }
-
-  // affine transformation
-  double x0 = X[0];
-  double y0 = Y[0];
-  double theta = atan2(Y[1] - Y[0], X[1] - X[0]);
-
-  vector<double> _X(spline_points), _Y(spline_points);
-  for(int i = 0; i < spline_points; i++) {
-    // translate P0 to origin
-    double x_t = X[i] - x0;
-    double y_t = Y[i] - y0;
-    _X[i] = x_t * cos(-theta) - y_t * sin(-theta);
-    _Y[i] = x_t * sin(-theta) + y_t * cos(-theta);
-  }
-
   // fit spline
-  tk::spline spline_func;
-  spline_func.set_points(_X, _Y);
+  auto spline_func = global_splines[prev_wp];
   double ratio = (s - maps_s[prev_wp]) / (maps_s[wp2]-maps_s[prev_wp]);
-  double _x = _X[2] + (_X[3] - _X[2]) * ratio;
+
+  // Points in car coordinates on prev_wp
+  double x0 = maps_x[prev_wp];
+  double x1 = maps_x[wp2];
+  double y0 = maps_y[prev_wp];
+  double y1 = maps_y[wp2];
+  double dx = x1 - x0;
+  double dy = y1 - y0;
+  double theta = atan2(dy, dx);
+
+  double _x = ratio * sqrt(dx * dx + dy * dy);
   double _y = spline_func(_x);
 
   double x, y;
@@ -508,7 +534,6 @@ vector<vector<double>> generate_trajectory(
     frenet_trajectories.push_back(trajectory);
   }
 
-  std::cout << "calculate cost\n";
   // Evaluate trajectory cost
   int best_trajectory_idx = 0;
   double min_cost = 1e10;
@@ -589,6 +614,9 @@ int main() {
   	map_waypoints_dx.push_back(d_x);
   	map_waypoints_dy.push_back(d_y);
   }
+
+  // Generate spline and save it for later use
+  generate_splines(map_waypoints_x, map_waypoints_y);
 
   h.onMessage([
       &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,
