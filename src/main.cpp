@@ -29,6 +29,7 @@ const double MPH_TO_MPS = 0.44704;  // miles per hour to meters per second
 const double SPEED_LIMIT = 49.9 * MPH_TO_MPS;
 const double MAX_ACC = 10.0;
 const double MAX_JERK = 10.0;
+string car_state;
 
 
 // save previous frenet trajectory globally
@@ -283,9 +284,20 @@ vector<double> JMT(vector< double> start, vector <double> end, double T)
 
 
 /* (Olala): PTG: polynomial trajectory generating */
-string get_behavior(string current_behavior, const json &sensor_fusion) {
-  string behavior ("full_speed_ahead");
-  return behavior;
+vector<double> get_behavior(const vector<double> car, const json &sensor_fusion) {
+  double car_s = car[0];
+  double car_d = car[1];
+  double car_speed = car[2];
+
+  double target_speed = 49.0 * 0.44704; // to meters per second
+  double T = 4.0;
+  double target_s = car_s + T * target_speed;
+  int target_lane = 1;
+  double target_d = target_lane * 4.0 + 2.0;
+
+  vector<double> target_manuevar = {target_s, target_d, target_speed, T};
+  return target_manuevar;
+
 }
 
 double poly_eval(double x, vector<double> coeffs) {
@@ -422,7 +434,7 @@ vector<vector<double>> very_constraints() {
 }
 
 vector<vector<double>> generate_trajectory(
-    double target_s, double target_speed, int target_lane,
+    double target_s, double target_speed, double target_d,
     double time_to_goal, const json &car, const json &sensor_fusion,
     vector<double> maps_s, vector<double> maps_x, vector<double> maps_y,
     vector<double> maps_dx, vector<double> maps_dy) {
@@ -446,7 +458,6 @@ vector<vector<double>> generate_trajectory(
   double end_path_s = car["end_path_s"];
   double end_path_d = car["end_path_d"];
 
-  double target_d = target_lane * 4.0 + 2.0;
   vector<double> end_s = {target_s, target_speed, 0.0};
   vector<double> end_d = {target_d, 0.0, 0.0};
 
@@ -593,8 +604,6 @@ int main() {
 
   ifstream in_map_(map_file_.c_str(), ifstream::in);
 
-  string current_behavior ("full_speed_ahead");
-
   string line;
   while (getline(in_map_, line)) {
   	istringstream iss(line);
@@ -619,8 +628,7 @@ int main() {
   generate_splines(map_waypoints_x, map_waypoints_y);
 
   h.onMessage([
-      &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,
-      &current_behavior](
+      &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](
         uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -666,17 +674,18 @@ int main() {
 
           // Behavior plaining
           // first skip this step
-          string new_behavior = get_behavior(current_behavior, sensor_fusion);
-          current_behavior = new_behavior;
+          car_state = "constant_speed";
+          vector<double> car = {car_s, car_d, car_speed};
+          auto target_manuevar = get_behavior(car, sensor_fusion);
 
-          double target_speed = 49.0 * 0.44704; // to meters per second
-          double T = 4.0;
-          double target_s = car_s + T * target_speed;
-          int target_lane = 1;
+          double target_s = target_manuevar[0];
+          double target_d = target_manuevar[1];
+          double target_speed = target_manuevar[2];
+          double T = target_manuevar[3];
 
           // Trajectory Genereation
           auto best_trajectory = generate_trajectory(
-              target_s, target_speed, target_lane, T, j[1], sensor_fusion,
+              target_s, target_speed, target_d, T, j[1], sensor_fusion,
               map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy);
           next_x_vals = best_trajectory[0];
           next_y_vals = best_trajectory[1];
