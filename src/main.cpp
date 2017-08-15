@@ -38,7 +38,9 @@ CarState current_car_state = velocity_keeping;
 
 
 // save previous frenet trajectory globally
-vector<deque<double>> prev_frenet_trajectory;
+deque<double> prev_s_traj, prev_d_traj;
+vector<deque<double>> prev_frenet_trajectory = {prev_s_traj, prev_d_traj};
+
 vector<tk::spline> global_splines;
 
 // Checks if the SocketIO event has JSON data.
@@ -474,11 +476,14 @@ double speed_limit_cost(vector<deque<double>> traj) {
 
 vector<vector<double>> very_constraints() {
   vector<vector<double>> all_constraints;
-  for(double dt = -0.5; dt <= 0.5; dt += 0.1) {
-    for(double dv = -10.0; dv <= 5.0; dv += 1.0) {
-      vector<double> a_constraint = {dt, dv};
-      all_constraints.push_back(a_constraint);
-    }
+  // for(double dt = -0.5; dt <= 0.5; dt += 0.1) {
+  //   for(double dv = -10.0; dv <= 5.0; dv += 1.0) {
+  //     vector<double> a_constraint = {dt, dv};
+  //     all_constraints.push_back(a_constraint);
+  //   }
+  // }
+  for(double dt = 0.0; dt <= 1.0; dt += 0.1) {
+    all_constraints.push_back({dt, 0.0});
   }
   return all_constraints;
 }
@@ -498,17 +503,20 @@ vector<vector<double>> generate_trajectory(
   double end_path_s = car["end_path_s"];
   double end_path_d = car["end_path_d"];
 
-  // Store all possible frenet trajectories here
+  // Save all possible frenet trajectories here cad select
+  // the one with min cost
   vector<vector<deque<double>>> frenet_trajectories;
 
+  // setup start config
   double start_s, start_s_d, start_s_dd;
   double start_d, start_d_d, start_d_dd;
-  int prev_steps_to_keep;
-  double time_to_goal = 2.0;
+
+  std::cout << "prev_sd_frenet_trajectory size:" << prev_frenet_trajectory.size() << std::endl;
+  auto prev_s_vals = prev_frenet_trajectory[0];
+  auto prev_d_vals = prev_frenet_trajectory[1];
 
   if (previous_path_x.size() <= 2) {
-    std::cout << "start_config without prev traj\n";
-    prev_steps_to_keep = 0;
+    std::cout << "generate traj from scratch\n";
 
     start_s = car["s"];
     start_s_d = car["speed"];
@@ -517,29 +525,23 @@ vector<vector<double>> generate_trajectory(
     start_d_d = 0.0;
     start_d_dd = 0.0;
   } else {
-    std::cout << "start_config with prev traj\n";
-    auto prev_s_vals = prev_frenet_trajectory[0];
-    auto prev_d_vals = prev_frenet_trajectory[1];
+    std::cout << "generate path with previously return traj\n";
 
     // remove trajectories that already been comsumed
-    int prev_steps_left = previous_path_x.size();
-    int prev_steps_given = prev_s_vals.size();
-    int num_steps_executed = prev_steps_given - prev_steps_left;
-
-    for(int i=0; i< num_steps_executed; i++) {
+    while (prev_s_vals.size() > previous_path_x.size()) {
       prev_s_vals.pop_front();
       prev_d_vals.pop_front();
     }
 
-    // use the first 3 steps as initial config
-    prev_steps_to_keep = 3;
-
-    double s0 = prev_s_vals[0];
-    double s1 = prev_s_vals[1];
-    double s2 = prev_s_vals[2];
-    double d0 = prev_d_vals[0];
-    double d1 = prev_d_vals[1];
-    double d2 = prev_d_vals[2];
+    // TODO(Olala): save the previously end config directly
+    assert(prev_s_vals.size() == previous_path_x.size());
+    int prev_step_size = prev_s_vals.size();
+    double s0 = prev_s_vals[prev_step_size - 3];
+    double s1 = prev_s_vals[prev_step_size - 2];
+    double s2 = prev_s_vals[prev_step_size - 1];
+    double d0 = prev_d_vals[prev_step_size - 3];
+    double d1 = prev_d_vals[prev_step_size - 2];
+    double d2 = prev_d_vals[prev_step_size - 1];
     double vs1 = (s1 - s0) / TIME_STEP;
     double vs2 = (s2 - s1) / TIME_STEP;
     double vd1 = (d1 - d0) / TIME_STEP;
@@ -554,24 +556,23 @@ vector<vector<double>> generate_trajectory(
     start_d_d = vd2;
     start_d_dd = ad2;
   }
-  std::cout << "got start config s:" << start_s << "," << start_s_d << "," << start_s_dd << "\n";
-  std::cout << "got start config d:" << start_d << "," << start_d_d << "," << start_d_dd << "\n";
-
   vector<double> start_s_config = {start_s, start_s_d, start_s_dd};
   vector<double> start_d_config = {start_d, start_d_d, start_d_dd};
+  std::cout << "Start config:" << start_s << "," << start_s_d << ", " << start_s_dd << std::endl;
 
-  // Try different end config
-  double target_speed = 30.9 * MPH_TO_MPS;
-  double target_s = start_s + target_speed * time_to_goal;
+  // Setup current target config
+  double time_to_goal = 3.0;
+  double current_speed = start_s_d;
+  double target_speed = min(SPEED_LIMIT, (current_speed + MAX_ACC * time_to_goal));
+  double target_s = start_s + 0.5 * (current_speed + target_speed) * time_to_goal;
   int target_lane = 1;
   double target_d = 2.0 + 4.0 * target_lane;
 
-  // vector<double> end_s = {target_s, target_speed, 0.0};
-  // vector<double> end_d = {target_d, 0.0, 0.0};
-
-  // Very end config for possible replacement trajectories
+  // Try different end configs with very_constraints()
   auto all_constraints = very_constraints();
   for (int c_idx = 0; c_idx < all_constraints.size(); c_idx++) {
+
+    std::cout << "try config " << c_idx << std::endl;
     auto a_constraint = all_constraints[c_idx];
     double dt = a_constraint[0];
     double dv = a_constraint[1];
@@ -583,30 +584,32 @@ vector<vector<double>> generate_trajectory(
     deque<double> next_s_vals;
     deque<double> next_d_vals;
 
+    // Use some previous trajectories left
+    for (int i = 0; i < prev_s_vals.size(); i++) {
+      next_s_vals.push_back(prev_s_vals[i]);
+      next_d_vals.push_back(prev_d_vals[i]);
+    }
+
     // JMT
     auto s_trajectory_coeff = JMT(start_s_config, try_end_s, try_time_to_goal);
     auto d_trajectory_coeff = JMT(start_d_config, try_end_d, try_time_to_goal);
 
-    // use some previous trajectories;
-    if (prev_steps_to_keep > 0) {
-      auto prev_s_vals = prev_frenet_trajectory[0];
-      auto prev_d_vals = prev_frenet_trajectory[1];
+    int prev_step_size = prev_s_vals.size();
+    int total_stpes = PREDICT_HORIZON / TIME_STEP;
 
-      for (int i = 0; i < prev_steps_to_keep; i++) {
-        next_s_vals.push_back(prev_s_vals[i]);
-        next_d_vals.push_back(prev_d_vals[i]);
-      }
-    }
-
-    for(double t = TIME_STEP; t <= PREDICT_HORIZON; t += TIME_STEP){
+    for (int i = 0; (i + prev_step_size) <= total_stpes; i++) {
+      double t = (i + 1) * TIME_STEP;
       double s = poly_eval(t, s_trajectory_coeff);
       double d = poly_eval(t, d_trajectory_coeff);
+
       next_s_vals.push_back(s);
       next_d_vals.push_back(d);
+      std::cout << "push:" << s << "," << d << std::endl;
     }
+    std::cout << "next_s_vals.size():" << next_s_vals.size() << std::endl;
 
-    vector<deque<double>> trajectory = {next_s_vals, next_d_vals};
-    frenet_trajectories.push_back(trajectory);
+    vector<deque<double>> a_trajectory = {next_s_vals, next_d_vals};
+    frenet_trajectories.push_back(a_trajectory);
   }
 
   // Evaluate trajectory cost
@@ -627,11 +630,13 @@ vector<vector<double>> generate_trajectory(
     }
   }
 
+  std::cout << "best traj:" << best_trajectory_idx << std::endl;
   auto best_trajectory = frenet_trajectories[best_trajectory_idx];
 
   // save frenet trajectory for next time
   auto next_s_vals = best_trajectory[0];
   auto next_d_vals = best_trajectory[1];
+  std::cout << "best traj lenth:" << next_s_vals.size() << std::endl;
   prev_frenet_trajectory.clear();
   prev_frenet_trajectory.push_back(next_s_vals);
   prev_frenet_trajectory.push_back(next_d_vals);
@@ -640,9 +645,11 @@ vector<vector<double>> generate_trajectory(
   vector<double> next_x_vals;
   vector<double> next_y_vals;
 
+  // std::cout << "frenet to cartesian\n";
   for(int i=0; i < next_s_vals.size(); i++) {
     double s = next_s_vals[i];
     double d = next_d_vals[i];
+    std::cout << "p[" << i << "]:" << s << "," << d << "\n";
     vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
     next_x_vals.push_back(point[0]);
     next_y_vals.push_back(point[1]);
@@ -650,6 +657,7 @@ vector<vector<double>> generate_trajectory(
   }
   vector<vector<double>> trajectory = {next_x_vals, next_y_vals};
 
+  std::cout << "return trajectory " << next_x_vals.size() << "," << next_y_vals.size() << std::endl;
   return trajectory;
 }
 
@@ -750,6 +758,8 @@ int main() {
               j[1], sensor_fusion,
               map_waypoints_s, map_waypoints_x, map_waypoints_y,
               map_waypoints_dx, map_waypoints_dy);
+
+          std::cout << "traj_size:" << best_trajectory[0].size() << std::endl;
 
           next_x_vals = best_trajectory[0];
           next_y_vals = best_trajectory[1];
