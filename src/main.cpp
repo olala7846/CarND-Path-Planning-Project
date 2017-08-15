@@ -27,8 +27,8 @@ double rad2deg(double x) { return x * 180 / pi(); }
 const double TIME_STEP = 0.02;
 const double MPH_TO_MPS = 0.44704;  // miles per hour to meters per second
 const double SPEED_LIMIT = 49.9 * MPH_TO_MPS;
-const double MAX_ACC = 10.0;
-const double MAX_JERK = 10.0;
+const double MAX_ACC = 9.0;
+const double MAX_JERK = 9.0;
 
 enum CarState {
   velocity_keeping,
@@ -342,12 +342,12 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
   }
 
   if (true || closest_vehicle_idx == -1 || closest_distance > 100.0) {
-    std::cout << "velocity keeping\n";
+    // std::cout << "velocity keeping\n";
     current_car_state = velocity_keeping;
 
   } else {
     current_car_state = vehicle_following;
-    std::cout << "vehicle following\n";
+    // std::cout << "vehicle following\n";
   }
 
 }
@@ -417,6 +417,7 @@ double max_acceleration_cost(vector<deque<double>> traj) {
     double v2 = (s2 - s1) / TIME_STEP;
     double a2 = (v2 / v1) / TIME_STEP;
     if (a2 > MAX_ACC) {
+      std::cout << "max accleration exceed\n";
       return 1.0;
     }
   }
@@ -446,8 +447,9 @@ double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
       double target_speed_s = sqrt(target_vx * target_vx + target_vy * target_vy);
       double target_future_s = target_s + target_speed_s * delta_t;
       if (car_d - 3.0 < target_d && target_d < car_d + 3.0 && target_future_s > car_s) {
-        double distance = target_future_s - car_s;
+        double distance = abs(target_future_s - car_s);
         if (distance < 5.0) {
+          std::cout << "will kiss\n";
           return 1.0;
         }
       }
@@ -461,12 +463,13 @@ double speed_limit_cost(vector<deque<double>> traj) {
   auto traj_s = traj[0];
   auto traj_d = traj[1];
   int traj_size = traj_s.size();
+  double SAFE_MARGIN = SPEED_LIMIT * 0.2;
   for(int i = 1; i < traj_size; i++) {
     double s1 = traj_s[i];
     double s0 = traj_s[i - 1];
     double v1 = (s1 - s0) / TIME_STEP;
     // add v1 < 0.0 because we don't want to spot on the highway
-    if (v1 >= SPEED_LIMIT || v1 < 0.0) {
+    if (v1 >= SPEED_LIMIT) {
       return 1.0;
     }
   }
@@ -476,15 +479,16 @@ double speed_limit_cost(vector<deque<double>> traj) {
 
 vector<vector<double>> very_constraints() {
   vector<vector<double>> all_constraints;
-  // for(double dt = -0.5; dt <= 0.5; dt += 0.1) {
-  //   for(double dv = -10.0; dv <= 5.0; dv += 1.0) {
-  //     vector<double> a_constraint = {dt, dv};
-  //     all_constraints.push_back(a_constraint);
-  //   }
-  // }
-  for(double dt = 0.0; dt <= 1.0; dt += 0.1) {
-    all_constraints.push_back({dt, 0.0});
+  for(double dt = 0.0; dt <= 2.0; dt += 0.1) {
+    for(double dv = -10.0; dv <= 0.0; dv += 1.0) {
+      vector<double> a_constraint = {dt, dv};
+      all_constraints.push_back(a_constraint);
+    }
   }
+
+  // for(double dt = 0.0; dt <= 2.0; dt += 0.1) {
+  //   all_constraints.push_back({dt, 0.0});
+  // }
   return all_constraints;
 }
 
@@ -492,7 +496,6 @@ vector<vector<double>> generate_trajectory(
     const json &car, const json &sensor_fusion,
     vector<double> maps_s, vector<double> maps_x, vector<double> maps_y,
     vector<double> maps_dx, vector<double> maps_dy) {
-  std::cout << "generate_trajectory\n";
 
   const double PREDICT_HORIZON = 2.5;  // time to predict ahead
 
@@ -511,7 +514,6 @@ vector<vector<double>> generate_trajectory(
   double start_s, start_s_d, start_s_dd;
   double start_d, start_d_d, start_d_dd;
 
-  std::cout << "prev_sd_frenet_trajectory size:" << prev_frenet_trajectory.size() << std::endl;
   auto prev_s_vals = prev_frenet_trajectory[0];
   auto prev_d_vals = prev_frenet_trajectory[1];
 
@@ -558,21 +560,23 @@ vector<vector<double>> generate_trajectory(
   }
   vector<double> start_s_config = {start_s, start_s_d, start_s_dd};
   vector<double> start_d_config = {start_d, start_d_d, start_d_dd};
-  std::cout << "Start config:" << start_s << "," << start_s_d << ", " << start_s_dd << std::endl;
+  // std::cout << "Start config:" << start_s << "," << start_s_d << ", " << start_s_dd << std::endl;
 
   // Setup current target config
   double time_to_goal = 3.0;
   double current_speed = start_s_d;
   double target_speed = min(SPEED_LIMIT, (current_speed + MAX_ACC * time_to_goal));
-  double target_s = start_s + 0.5 * (current_speed + target_speed) * time_to_goal;
+  // double target_s = start_s + 0.5 * (current_speed + target_speed) * time_to_goal * 0.5;
+  // TODO(Olala): what is the correct target_s?
+  double target_s = start_s + 50;
   int target_lane = 1;
   double target_d = 2.0 + 4.0 * target_lane;
+  std::cout << "target:" << target_s << "," << target_speed << "," << time_to_goal << std::endl;
 
   // Try different end configs with very_constraints()
   auto all_constraints = very_constraints();
   for (int c_idx = 0; c_idx < all_constraints.size(); c_idx++) {
 
-    std::cout << "try config " << c_idx << std::endl;
     auto a_constraint = all_constraints[c_idx];
     double dt = a_constraint[0];
     double dv = a_constraint[1];
@@ -604,9 +608,7 @@ vector<vector<double>> generate_trajectory(
 
       next_s_vals.push_back(s);
       next_d_vals.push_back(d);
-      std::cout << "push:" << s << "," << d << std::endl;
     }
-    std::cout << "next_s_vals.size():" << next_s_vals.size() << std::endl;
 
     vector<deque<double>> a_trajectory = {next_s_vals, next_d_vals};
     frenet_trajectories.push_back(a_trajectory);
@@ -615,7 +617,6 @@ vector<vector<double>> generate_trajectory(
   // Evaluate trajectory cost
   int best_trajectory_idx = 0;
   double min_cost = 1e10;
-  std::cout << "find best traj out of " << frenet_trajectories.size() << std::endl;
   for (int i = 0; i < frenet_trajectories.size(); i++) {
     auto trajectory = frenet_trajectories[i];
     double cost = 0.0;
@@ -630,13 +631,12 @@ vector<vector<double>> generate_trajectory(
     }
   }
 
-  std::cout << "best traj:" << best_trajectory_idx << std::endl;
+  std::cout << "best traj:" << best_trajectory_idx << " cost:" << min_cost << std::endl;
   auto best_trajectory = frenet_trajectories[best_trajectory_idx];
 
   // save frenet trajectory for next time
   auto next_s_vals = best_trajectory[0];
   auto next_d_vals = best_trajectory[1];
-  std::cout << "best traj lenth:" << next_s_vals.size() << std::endl;
   prev_frenet_trajectory.clear();
   prev_frenet_trajectory.push_back(next_s_vals);
   prev_frenet_trajectory.push_back(next_d_vals);
@@ -649,15 +649,14 @@ vector<vector<double>> generate_trajectory(
   for(int i=0; i < next_s_vals.size(); i++) {
     double s = next_s_vals[i];
     double d = next_d_vals[i];
-    std::cout << "p[" << i << "]:" << s << "," << d << "\n";
+    // std::cout << "Frenet[" << i << "]:" << s << "," << d << "\n";
     vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
     next_x_vals.push_back(point[0]);
     next_y_vals.push_back(point[1]);
-    // std::cout << "X[" << i << "] " << point[0] << ", " << point[1] << "\n";
+    // std::cout << "Cartesian[" << i << "] " << point[0] << ", " << point[1] << "\n";
   }
   vector<vector<double>> trajectory = {next_x_vals, next_y_vals};
 
-  std::cout << "return trajectory " << next_x_vals.size() << "," << next_y_vals.size() << std::endl;
   return trajectory;
 }
 
