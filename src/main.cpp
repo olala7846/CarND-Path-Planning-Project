@@ -32,7 +32,9 @@ const double MAX_JERK = 9.0;
 
 enum CarState {
   velocity_keeping,
-  vehicle_following
+  vehicle_following,
+  lane_change_left,
+  lane_change_right,
 };
 CarState current_car_state = velocity_keeping;
 
@@ -356,25 +358,64 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
   int current_lane = get_lane(car_d);
 
   int leading_vehicle_idx = get_leading_vehicle_idx(car_s, car_d, sensor_fusion);
-  if (leading_vehicle_idx == -1) {
-    current_car_state = velocity_keeping;
-    return;
-  }
-  json leading_vehicle_data = sensor_fusion[leading_vehicle_idx];
-  double vehicle_s = leading_vehicle_data[5];
-  double vehicle_d = leading_vehicle_data[6];
-  double distance_ahead = vehicle_s - car_s;
-
-  // if no vehicle 50 meters ahead, keep the velocity near speed limit
-  if (distance_ahead > 100.0) {
-    // std::cout << "velocity keeping\n";
-    current_car_state = velocity_keeping;
-
-  } else {
-    std::cout << "following vehicle!!\n";
-    current_car_state = vehicle_following;
+  json leading_vehicle_data;
+  double lv_s, lv_d, lv_dist;
+  if (leading_vehicle_idx != -1) {
+    leading_vehicle_data = sensor_fusion[leading_vehicle_idx];
+    lv_s = leading_vehicle_data[5];
+    lv_d = leading_vehicle_data[6];
+    lv_dist = lv_s - car_s;
   }
 
+  bool left_is_clear = true;
+  bool right_is_clear = true;
+  for (int vid = 0; vid < sensor_fusion.size(); vid++) {
+    json car_data = sensor_fusion[vid];
+    int vehicle_id = car_data[0];
+    double vehicle_x = car_data[1];
+    double vehicle_y = car_data[2];
+    double vehicle_vx = car_data[3];
+    double vehicle_vy = car_data[4];
+    double vehicle_s = car_data[5];
+    double vehicle_d = car_data[6];
+    int vehicle_lane = get_lane(vehicle_d);
+    if (vehicle_s < (car_s + 60.0) && vehicle_s > (car_s - 10.0)) {
+      if (vehicle_lane < current_lane)
+        left_is_clear = false;
+      if (vehicle_lane > current_lane)
+        right_is_clear = false;
+    }
+    if (current_lane == 0)
+      right_is_clear = false;
+    if (current_lane == 2)
+      right_is_clear = false;
+  }
+
+
+  if (current_car_state == velocity_keeping) {
+    if (leading_vehicle_idx == -1 || lv_dist > 80.0) {
+      // keep current state
+    } else {
+      current_car_state = vehicle_following;
+    }
+  } else if (current_car_state == vehicle_following) {
+    if (leading_vehicle_idx == -1 || lv_dist > 80.0) {
+      current_car_state = velocity_keeping;
+    } else if (left_is_clear) {
+      current_car_state = lane_change_left;
+    } else if (right_is_clear) {
+      current_car_state = lane_change_right;
+    }
+  } else if (current_car_state == lane_change_left) {
+    if (current_lane == 0 || leading_vehicle_idx == -1 || lv_dist > 80.0) {
+      current_car_state = velocity_keeping;
+    }
+  } else if (current_car_state == lane_change_right) {
+    if (current_lane == 2 || leading_vehicle_idx == -1 || lv_dist > 80.0) {
+      current_car_state = velocity_keeping;
+    }
+  }
+  std::cout << "current state:" << current_car_state << std::endl;
 }
 
 double poly_eval(double x, vector<double> coeffs) {
@@ -605,7 +646,7 @@ vector<vector<double>> generate_trajectory(
   // std::cout << "Start config:" << start_s << "," << start_s_d << ", " << start_s_dd << std::endl;
 
   // Velocity keeping
-  if (current_car_state == velocity_keeping) {
+  if (current_car_state == velocity_keeping || current_car_state == lane_change_left) {
     // very speed and time to goal and fix target_s
     double end_sx = start_s + 30.0;
     double base_speed = min(SPEED_LIMIT, (start_s_d + 5.0));
@@ -622,6 +663,11 @@ vector<vector<double>> generate_trajectory(
     }
 
     int target_lane = get_lane(start_d);
+    if (current_car_state == lane_change_left) {
+      target_lane = max(0, target_lane - 1);
+    } else if (current_car_state == lane_change_right) {
+      target_lane = min(2, target_lane + 1);
+    }
     double target_d = 2.0 + 4.0 * target_lane;
     double base_duration = 4.0;
     double target_d_speed = 0.0;
@@ -648,7 +694,7 @@ vector<vector<double>> generate_trajectory(
 
     double lv_speed = sqrt(lv_vx * lv_vx + lv_vy * lv_vy);
     double target_v = min(SPEED_LIMIT, lv_speed);
-    double REACTION_TIME = 1.5;
+    double REACTION_TIME = 1.0;
     double target_distance_ahead = target_v * REACTION_TIME;
 
     for (double duration = 1.0; duration <= 10.0; duration += 0.2) {
@@ -715,6 +761,8 @@ vector<vector<double>> generate_trajectory(
     auto trajectory = frenet_trajectories[i];
     double cost = 0.0;
     cost += 1000.0 * collision_cost(trajectory, sensor_fusion);
+    // TODO(Olala): target s diff
+    // TODO(Olala): target v diff
     // cost += 1000.0 * max_acceleration_cost(trajectory);
     // cost += 500.0 * speed_limit_cost(trajectory);
     // cost += 1.0 * s_diff_cost(trajectory, end_s);
