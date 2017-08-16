@@ -62,6 +62,15 @@ double distance(double x1, double y1, double x2, double y2)
 {
 	return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
 }
+
+vector<double> derivative(vector<double> coeff) {
+  vector<double> derivative_coeffs;
+  for (int i = 1; i < coeff.size(); i++) {
+    derivative_coeffs.push_back(i * coeff[i]);
+  }
+  return derivative_coeffs;
+}
+
 int ClosestWaypoint(double x, double y, vector<double> maps_x, vector<double> maps_y)
 {
 
@@ -341,7 +350,8 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     }
   }
 
-  if (true || closest_vehicle_idx == -1 || closest_distance > 100.0) {
+  // if no vehicle 50 meters ahead, keep the velocity near speed limit
+  if (true || closest_vehicle_idx == -1 || closest_distance > 50.0) {
     // std::cout << "velocity keeping\n";
     current_car_state = velocity_keeping;
 
@@ -476,20 +486,20 @@ double speed_limit_cost(vector<deque<double>> traj) {
   return 0.0;
 }
 
+vector<vector<vector<double>>> enumerate_coeffs_combs(
+    vector<vector<double>> possible_s_coeffs,
+    vector<vector<double>> possible_d_coeffs) {
 
-vector<vector<double>> very_constraints() {
-  vector<vector<double>> all_constraints;
-  for(double dt = 0.0; dt <= 2.0; dt += 0.1) {
-    for(double dv = -10.0; dv <= 0.0; dv += 1.0) {
-      vector<double> a_constraint = {dt, dv};
-      all_constraints.push_back(a_constraint);
+  std::cout << "s:" << possible_s_coeffs.size() << " d:" << possible_d_coeffs.size() << std::endl;
+  vector<vector<vector<double>>> cominations;
+  for (int i = 0; i < possible_s_coeffs.size(); i++) {
+    for (int j = 0; j < possible_d_coeffs.size(); j++) {
+      auto s_coeffs = possible_s_coeffs[i];
+      auto d_coeffs = possible_d_coeffs[j];
+      cominations.push_back({s_coeffs, d_coeffs});
     }
   }
-
-  // for(double dt = 0.0; dt <= 2.0; dt += 0.1) {
-  //   all_constraints.push_back({dt, 0.0});
-  // }
-  return all_constraints;
+  return cominations;
 }
 
 vector<vector<double>> generate_trajectory(
@@ -516,6 +526,9 @@ vector<vector<double>> generate_trajectory(
 
   auto prev_s_vals = prev_frenet_trajectory[0];
   auto prev_d_vals = prev_frenet_trajectory[1];
+
+  vector<vector<double>> possible_s_coeffs;
+  vector<vector<double>> possible_d_coeffs;
 
   if (previous_path_x.size() <= 2) {
     std::cout << "generate traj from scratch\n";
@@ -562,28 +575,53 @@ vector<vector<double>> generate_trajectory(
   vector<double> start_d_config = {start_d, start_d_d, start_d_dd};
   // std::cout << "Start config:" << start_s << "," << start_s_d << ", " << start_s_dd << std::endl;
 
-  // Setup current target config
-  double time_to_goal = 3.0;
-  double current_speed = start_s_d;
-  double target_speed = min(SPEED_LIMIT, (current_speed + MAX_ACC * time_to_goal));
-  // double target_s = start_s + 0.5 * (current_speed + target_speed) * time_to_goal * 0.5;
-  // TODO(Olala): what is the correct target_s?
-  double target_s = start_s + 50;
-  int target_lane = 1;
-  double target_d = 2.0 + 4.0 * target_lane;
-  std::cout << "target:" << target_s << "," << target_speed << "," << time_to_goal << std::endl;
+  // Velocity keeping
+  if (current_car_state == velocity_keeping) {
+    // very speed and time to goal and fix target_s
+    double end_sx = start_s + 30.0;
+    double base_speed = min(SPEED_LIMIT, (start_s_d + 5.0));
+    double base_time = PREDICT_HORIZON;
+
+    for (double end_sv = max(1.0, base_speed - 5.0); end_sv <= min(SPEED_LIMIT, base_speed + 5.0); end_sv += 2.0) {
+      for (double duration = min(1.0, base_time - 1.0); duration < (base_time + 2.0); duration += 0.2) {
+        vector<double> try_end_s = {end_sx, end_sv, 0.0};
+        auto s_coeffs = JMT(start_s_config, try_end_s, duration);
+        auto s_d_coeffs = derivative(s_coeffs);
+        auto s_dd_coeffs = derivative(s_d_coeffs);
+        auto s_ddd_coeffs = derivative(s_dd_coeffs);
+        bool traj_is_good = true;
+        for (double t = TIME_STEP; t <= duration; t += TIME_STEP) {
+          double v = poly_eval(t, s_d_coeffs);
+          double a = poly_eval(t, s_dd_coeffs);
+          double j = poly_eval(t, s_ddd_coeffs);
+          if (v > SPEED_LIMIT || a > MAX_ACC) {
+            traj_is_good = false;
+            std::cout << "Break:" << v << ", " << a << ", " << j << std::endl;
+            break;  // skip if break speed or physics law
+          }
+        }
+        if (traj_is_good) {
+          possible_s_coeffs.push_back(s_coeffs);
+        }
+      }
+    }
+
+    int target_lane = 1;
+    double target_d = 2.0 + 4.0 * target_lane;
+    double d_duration = 3.0;
+    double target_d_speed = 0.0;
+    vector<double> end_d_config = {target_d, target_d_speed, 0.0};
+    auto d_coeffs = JMT(start_d_config, end_d_config, d_duration);
+    possible_d_coeffs.push_back(d_coeffs);
+  }
 
   // Try different end configs with very_constraints()
-  auto all_constraints = very_constraints();
-  for (int c_idx = 0; c_idx < all_constraints.size(); c_idx++) {
-
-    auto a_constraint = all_constraints[c_idx];
-    double dt = a_constraint[0];
-    double dv = a_constraint[1];
-
-    vector<double> try_end_s = {target_s, target_speed + dv, 0.0};
-    vector<double> try_end_d = {target_d, 0.0, 0.0};
-    double try_time_to_goal = time_to_goal + dt;
+  auto combinations = enumerate_coeffs_combs(possible_s_coeffs, possible_d_coeffs);
+  assert(combinations.size() > 0);
+  for (int cid = 0; cid < combinations.size(); cid++) {
+    auto a_comb = combinations[cid];
+    auto s_coeffs = a_comb[0];
+    auto d_coeffs = a_comb[1];
 
     deque<double> next_s_vals;
     deque<double> next_d_vals;
@@ -594,17 +632,13 @@ vector<vector<double>> generate_trajectory(
       next_d_vals.push_back(prev_d_vals[i]);
     }
 
-    // JMT
-    auto s_trajectory_coeff = JMT(start_s_config, try_end_s, try_time_to_goal);
-    auto d_trajectory_coeff = JMT(start_d_config, try_end_d, try_time_to_goal);
-
     int prev_step_size = prev_s_vals.size();
     int total_stpes = PREDICT_HORIZON / TIME_STEP;
 
     for (int i = 0; (i + prev_step_size) <= total_stpes; i++) {
       double t = (i + 1) * TIME_STEP;
-      double s = poly_eval(t, s_trajectory_coeff);
-      double d = poly_eval(t, d_trajectory_coeff);
+      double s = poly_eval(t, s_coeffs);
+      double d = poly_eval(t, d_coeffs);
 
       next_s_vals.push_back(s);
       next_d_vals.push_back(d);
@@ -621,8 +655,8 @@ vector<vector<double>> generate_trajectory(
     auto trajectory = frenet_trajectories[i];
     double cost = 0.0;
     cost += 1000.0 * collision_cost(trajectory, sensor_fusion);
-    cost += 1000.0 * max_acceleration_cost(trajectory);
-    cost += 500.0 * speed_limit_cost(trajectory);
+    // cost += 1000.0 * max_acceleration_cost(trajectory);
+    // cost += 500.0 * speed_limit_cost(trajectory);
     // cost += 1.0 * s_diff_cost(trajectory, end_s);
 
     if(cost < min_cost) {
@@ -758,7 +792,7 @@ int main() {
               map_waypoints_s, map_waypoints_x, map_waypoints_y,
               map_waypoints_dx, map_waypoints_dy);
 
-          std::cout << "traj_size:" << best_trajectory[0].size() << std::endl;
+          // std::cout << "traj_size:" << best_trajectory[0].size() << std::endl;
 
           next_x_vals = best_trajectory[0];
           next_y_vals = best_trajectory[1];
