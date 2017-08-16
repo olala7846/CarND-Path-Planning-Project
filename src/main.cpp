@@ -319,15 +319,10 @@ double sensor_fusion_speed(json car_data) {
     return sqrt(car_vx * car_vx + car_vy * car_vy);
 }
 
-
-/* (Olala): update car state machine */
-void update_car_state(const vector<double> car, const json &sensor_fusion) {
-  double car_s = car[0];
-  double car_d = car[1];
-  double car_speed = car[2];
+int get_leading_vehicle_idx(double car_s, double car_d, const json &sensor_fusion) {
   int current_lane = get_lane(car_d);
 
-  int closest_vehicle_idx = -1;
+  int leading_vehicle_idx = -1;
   double closest_distance = 1e5; // large number
   for (int vehicle_idx = 0; vehicle_idx < sensor_fusion.size(); vehicle_idx++) {
     json car_data = sensor_fusion[vehicle_idx];
@@ -345,19 +340,39 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     }
     double distance = vehicle_s - car_s;
     if (distance < closest_distance) {
-      closest_vehicle_idx = vehicle_idx;
+      leading_vehicle_idx = vehicle_idx;
       closest_distance = distance;
     }
   }
+  return leading_vehicle_idx;
+}
+
+
+/* (Olala): update car state machine */
+void update_car_state(const vector<double> car, const json &sensor_fusion) {
+  double car_s = car[0];
+  double car_d = car[1];
+  double car_speed = car[2];
+  int current_lane = get_lane(car_d);
+
+  int leading_vehicle_idx = get_leading_vehicle_idx(car_s, car_d, sensor_fusion);
+  if (leading_vehicle_idx == -1) {
+    current_car_state = velocity_keeping;
+    return;
+  }
+  json leading_vehicle_data = sensor_fusion[leading_vehicle_idx];
+  double vehicle_s = leading_vehicle_data[5];
+  double vehicle_d = leading_vehicle_data[6];
+  double distance_ahead = vehicle_s - car_s;
 
   // if no vehicle 50 meters ahead, keep the velocity near speed limit
-  if (true || closest_vehicle_idx == -1 || closest_distance > 50.0) {
+  if (distance_ahead > 100.0) {
     // std::cout << "velocity keeping\n";
     current_car_state = velocity_keeping;
 
   } else {
+    std::cout << "following vehicle!!\n";
     current_car_state = vehicle_following;
-    // std::cout << "vehicle following\n";
   }
 
 }
@@ -502,6 +517,21 @@ vector<vector<vector<double>>> enumerate_coeffs_combs(
   return cominations;
 }
 
+// check whether the JMT coefficients will break the car limits
+// within check_duration
+bool check_is_JMT_good(vector<double> jmt_coeffs, double check_duration) {
+  auto v_coeffs = derivative(jmt_coeffs);
+  auto a_coeffs = derivative(v_coeffs);
+  for (double t = TIME_STEP; t <= check_duration; t += TIME_STEP) {
+    double v = poly_eval(t, v_coeffs);
+    double a = abs(poly_eval(t, a_coeffs));
+    if (v > SPEED_LIMIT || a > MAX_ACC) {
+      return false;
+    }
+  }
+  return true;
+}
+
 vector<vector<double>> generate_trajectory(
     const json &car, const json &sensor_fusion,
     vector<double> maps_s, vector<double> maps_x, vector<double> maps_y,
@@ -540,7 +570,6 @@ vector<vector<double>> generate_trajectory(
     start_d_d = 0.0;
     start_d_dd = 0.0;
   } else {
-    std::cout << "generate path with previously return traj\n";
 
     // remove trajectories that already been comsumed
     while (prev_s_vals.size() > previous_path_x.size()) {
@@ -586,44 +615,61 @@ vector<vector<double>> generate_trajectory(
       for (double duration = min(1.0, base_time - 1.0); duration < (base_time + 2.0); duration += 0.2) {
         vector<double> try_end_s = {end_sx, end_sv, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
-        auto s_d_coeffs = derivative(s_coeffs);
-        auto s_dd_coeffs = derivative(s_d_coeffs);
-        bool traj_is_good = true;
-        for (double t = TIME_STEP; t <= duration; t += TIME_STEP) {
-          double v = poly_eval(t, s_d_coeffs);
-          double a = abs(poly_eval(t, s_dd_coeffs));
-          if (v > SPEED_LIMIT || a > MAX_ACC) {
-            traj_is_good = false;
-            break;  // skip if break speed or physics law
-          }
-        }
-        if (traj_is_good) {
+        if (check_is_JMT_good(s_coeffs, duration)){
           possible_s_coeffs.push_back(s_coeffs);
         }
       }
     }
 
-    int target_lane = 0;
+    int target_lane = get_lane(start_d);
     double target_d = 2.0 + 4.0 * target_lane;
     double base_duration = 4.0;
     double target_d_speed = 0.0;
 
-    for (double duration = max(0.0, base_duration - 1.0); duration <= (base_duration + 1.0); duration += 0.2) {
+    for (double duration = (base_duration - 0.5); duration <= (base_duration + 0.5); duration += 0.2) {
       vector<double> try_end_d = {target_d, target_d_speed, 0.0};
       auto d_coeffs = JMT(start_d_config, try_end_d, duration);
-      auto d_d_coeffs = derivative(d_coeffs);
-      auto d_dd_coeffs = derivative(d_d_coeffs);
-      bool traj_is_good = true;
-      for (double t = TIME_STEP; t <= duration; t += TIME_STEP) {
-        double v = poly_eval(t, d_d_coeffs);
-        double a = poly_eval(t, d_dd_coeffs);
-        if (v > SPEED_LIMIT || a > MAX_ACC) {
-          std::cout << "bad d:" << v << ", " << a << std::endl;
-          traj_is_good = false;
-          break;
-        }
+      if (check_is_JMT_good(d_coeffs, duration)) {
+        possible_d_coeffs.push_back(d_coeffs);
       }
-      if (traj_is_good) {
+    }
+  } else if (current_car_state == vehicle_following) {
+    int target_vehicle_index = -1;
+    int leading_vehicle_idx = get_leading_vehicle_idx(start_s, start_d, sensor_fusion);
+    assert(leading_vehicle_idx > 0 && leading_vehicle_idx < sensor_fusion.size());
+
+    json leading_vehicle = sensor_fusion[leading_vehicle_idx];
+    double lv_x = leading_vehicle[1];
+    double lv_y = leading_vehicle[2];
+    double lv_vx = leading_vehicle[3];
+    double lv_vy = leading_vehicle[4];
+    double lv_s = leading_vehicle[5];
+    double lv_d = leading_vehicle[6];
+
+    double lv_speed = sqrt(lv_vx * lv_vx + lv_vy * lv_vy);
+    double target_v = min(SPEED_LIMIT, lv_speed);
+    double REACTION_TIME = 1.5;
+    double target_distance_ahead = target_v * REACTION_TIME;
+
+    for (double duration = 1.0; duration <= 10.0; duration += 0.2) {
+      double target_s = lv_s + lv_speed * duration - target_distance_ahead;
+      vector<double> try_end_s = {target_s, target_v, 0.0};
+      auto s_coeffs = JMT(start_s_config, try_end_s, duration);
+      bool is_traj_good = check_is_JMT_good(s_coeffs, duration);
+      if (is_traj_good) {
+        possible_s_coeffs.push_back(s_coeffs);
+      }
+    }
+
+    int target_lane = get_lane(start_d);
+    double target_d = 2.0 + 4.0 * target_lane;
+    double base_duration = 4.0;
+    double target_d_speed = 0.0;
+
+    for (double duration = (base_duration - 0.5); duration <= (base_duration + 0.5); duration += 0.2) {
+      vector<double> try_end_d = {target_d, target_d_speed, 0.0};
+      auto d_coeffs = JMT(start_d_config, try_end_d, duration);
+      if (check_is_JMT_good(d_coeffs, duration)) {
         possible_d_coeffs.push_back(d_coeffs);
       }
     }
