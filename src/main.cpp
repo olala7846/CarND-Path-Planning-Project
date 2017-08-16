@@ -588,15 +588,12 @@ vector<vector<double>> generate_trajectory(
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
         auto s_d_coeffs = derivative(s_coeffs);
         auto s_dd_coeffs = derivative(s_d_coeffs);
-        auto s_ddd_coeffs = derivative(s_dd_coeffs);
         bool traj_is_good = true;
         for (double t = TIME_STEP; t <= duration; t += TIME_STEP) {
           double v = poly_eval(t, s_d_coeffs);
-          double a = poly_eval(t, s_dd_coeffs);
-          double j = poly_eval(t, s_ddd_coeffs);
+          double a = abs(poly_eval(t, s_dd_coeffs));
           if (v > SPEED_LIMIT || a > MAX_ACC) {
             traj_is_good = false;
-            std::cout << "Break:" << v << ", " << a << ", " << j << std::endl;
             break;  // skip if break speed or physics law
           }
         }
@@ -606,13 +603,30 @@ vector<vector<double>> generate_trajectory(
       }
     }
 
-    int target_lane = 1;
+    int target_lane = 0;
     double target_d = 2.0 + 4.0 * target_lane;
-    double d_duration = 3.0;
+    double base_duration = 4.0;
     double target_d_speed = 0.0;
-    vector<double> end_d_config = {target_d, target_d_speed, 0.0};
-    auto d_coeffs = JMT(start_d_config, end_d_config, d_duration);
-    possible_d_coeffs.push_back(d_coeffs);
+
+    for (double duration = max(0.0, base_duration - 1.0); duration <= (base_duration + 1.0); duration += 0.2) {
+      vector<double> try_end_d = {target_d, target_d_speed, 0.0};
+      auto d_coeffs = JMT(start_d_config, try_end_d, duration);
+      auto d_d_coeffs = derivative(d_coeffs);
+      auto d_dd_coeffs = derivative(d_d_coeffs);
+      bool traj_is_good = true;
+      for (double t = TIME_STEP; t <= duration; t += TIME_STEP) {
+        double v = poly_eval(t, d_d_coeffs);
+        double a = poly_eval(t, d_dd_coeffs);
+        if (v > SPEED_LIMIT || a > MAX_ACC) {
+          std::cout << "bad d:" << v << ", " << a << std::endl;
+          traj_is_good = false;
+          break;
+        }
+      }
+      if (traj_is_good) {
+        possible_d_coeffs.push_back(d_coeffs);
+      }
+    }
   }
 
   // Try different end configs with very_constraints()
