@@ -44,6 +44,7 @@ deque<double> prev_s_traj, prev_d_traj;
 vector<deque<double>> prev_frenet_trajectory = {prev_s_traj, prev_d_traj};
 
 vector<tk::spline> global_splines;
+int lane_change_target_lane = 1;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -379,21 +380,21 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     double vehicle_s = car_data[5];
     double vehicle_d = car_data[6];
     int vehicle_lane = get_lane(vehicle_d);
-    if (vehicle_s < (car_s + 60.0) && vehicle_s > (car_s - 10.0)) {
-      if (vehicle_lane < current_lane)
+    if (vehicle_s < (car_s + 70.0) && vehicle_s > (car_s - 10.0)) {
+      if (vehicle_lane == (current_lane - 1))
         left_is_clear = false;
-      if (vehicle_lane > current_lane)
+      if (vehicle_lane == (current_lane + 1))
         right_is_clear = false;
     }
     if (current_lane == 0)
-      right_is_clear = false;
+      left_is_clear = false;
     if (current_lane == 2)
       right_is_clear = false;
   }
 
 
   if (current_car_state == velocity_keeping) {
-    if (leading_vehicle_idx == -1 || lv_dist > 80.0) {
+    if (leading_vehicle_idx == -1 || lv_dist > 70.0) {
       // keep current state
     } else {
       current_car_state = vehicle_following;
@@ -403,19 +404,21 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
       current_car_state = velocity_keeping;
     } else if (left_is_clear) {
       current_car_state = lane_change_left;
+      lane_change_target_lane = current_lane - 1;
     } else if (right_is_clear) {
       current_car_state = lane_change_right;
+      lane_change_target_lane = current_lane + 1;
     }
   } else if (current_car_state == lane_change_left) {
-    if (current_lane == 0 || leading_vehicle_idx == -1 || lv_dist > 80.0) {
+    if (current_lane <= lane_change_target_lane || leading_vehicle_idx == -1 || lv_dist > 80.0) {
       current_car_state = velocity_keeping;
     }
   } else if (current_car_state == lane_change_right) {
-    if (current_lane == 2 || leading_vehicle_idx == -1 || lv_dist > 80.0) {
+    if (current_lane >= lane_change_target_lane || leading_vehicle_idx == -1 || lv_dist > 80.0) {
       current_car_state = velocity_keeping;
     }
   }
-  std::cout << "current state:" << current_car_state << std::endl;
+  std::cout << "current state:" << current_car_state << " target lane:" << lane_change_target_lane<< std::endl;
 }
 
 double poly_eval(double x, vector<double> coeffs) {
@@ -646,7 +649,9 @@ vector<vector<double>> generate_trajectory(
   // std::cout << "Start config:" << start_s << "," << start_s_d << ", " << start_s_dd << std::endl;
 
   // Velocity keeping
-  if (current_car_state == velocity_keeping || current_car_state == lane_change_left) {
+  if (current_car_state == velocity_keeping ||
+      current_car_state == lane_change_left ||
+      current_car_state == lane_change_right) {
     // very speed and time to goal and fix target_s
     double end_sx = start_s + 30.0;
     double base_speed = min(SPEED_LIMIT, (start_s_d + 5.0));
@@ -663,12 +668,11 @@ vector<vector<double>> generate_trajectory(
     }
 
     int target_lane = get_lane(start_d);
-    if (current_car_state == lane_change_left) {
-      target_lane = max(0, target_lane - 1);
-    } else if (current_car_state == lane_change_right) {
-      target_lane = min(2, target_lane + 1);
+    if (current_car_state == lane_change_left || current_car_state == lane_change_right) {
+      target_lane = lane_change_target_lane;
     }
     double target_d = 2.0 + 4.0 * target_lane;
+    std::cout << "target lane:" << target_lane << ", target_d:" << target_d << std::endl;
     double base_duration = 4.0;
     double target_d_speed = 0.0;
 
@@ -682,7 +686,7 @@ vector<vector<double>> generate_trajectory(
   } else if (current_car_state == vehicle_following) {
     int target_vehicle_index = -1;
     int leading_vehicle_idx = get_leading_vehicle_idx(start_s, start_d, sensor_fusion);
-    assert(leading_vehicle_idx > 0 && leading_vehicle_idx < sensor_fusion.size());
+    assert(leading_vehicle_idx >= 0 && leading_vehicle_idx < sensor_fusion.size());
 
     json leading_vehicle = sensor_fusion[leading_vehicle_idx];
     double lv_x = leading_vehicle[1];
@@ -694,10 +698,10 @@ vector<vector<double>> generate_trajectory(
 
     double lv_speed = sqrt(lv_vx * lv_vx + lv_vy * lv_vy);
     double target_v = min(SPEED_LIMIT, lv_speed);
-    double REACTION_TIME = 1.0;
-    double target_distance_ahead = target_v * REACTION_TIME;
+    double REACTION_TIME = 0.5;
+    double target_distance_ahead = target_v * REACTION_TIME + 5.0;
 
-    for (double duration = 1.0; duration <= 10.0; duration += 0.2) {
+    for (double duration = 1.0; duration <= 10.0; duration += 0.5) {
       double target_s = lv_s + lv_speed * duration - target_distance_ahead;
       vector<double> try_end_s = {target_s, target_v, 0.0};
       auto s_coeffs = JMT(start_s_config, try_end_s, duration);
@@ -773,7 +777,7 @@ vector<vector<double>> generate_trajectory(
     }
   }
 
-  std::cout << "best traj:" << best_trajectory_idx << " cost:" << min_cost << std::endl;
+  // std::cout << "best traj:" << best_trajectory_idx << " cost:" << min_cost << std::endl;
   auto best_trajectory = frenet_trajectories[best_trajectory_idx];
 
   // save frenet trajectory for next time
