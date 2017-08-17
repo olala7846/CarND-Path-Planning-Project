@@ -26,7 +26,7 @@ double rad2deg(double x) { return x * 180 / pi(); }
 
 const double TIME_STEP = 0.02;
 const double MPH_TO_MPS = 0.44704;  // miles per hour to meters per second
-const double SPEED_LIMIT = 49.9 * MPH_TO_MPS;
+const double SPEED_LIMIT = 49.0 * MPH_TO_MPS;
 const double MAX_ACC = 9.0;
 const double MAX_JERK = 9.0;
 
@@ -322,10 +322,10 @@ double sensor_fusion_speed(json car_data) {
     return sqrt(car_vx * car_vx + car_vy * car_vy);
 }
 
-int get_leading_vehicle_idx(double car_s, double car_d, const json &sensor_fusion) {
+int get_leading_vehicle_id(double car_s, double car_d, const json &sensor_fusion) {
   int current_lane = get_lane(car_d);
 
-  int leading_vehicle_idx = -1;
+  int leading_vehicle_id = -1;
   double closest_distance = 1e5; // large number
   for (int vehicle_idx = 0; vehicle_idx < sensor_fusion.size(); vehicle_idx++) {
     json car_data = sensor_fusion[vehicle_idx];
@@ -343,13 +343,22 @@ int get_leading_vehicle_idx(double car_s, double car_d, const json &sensor_fusio
     }
     double distance = vehicle_s - car_s;
     if (distance < closest_distance) {
-      leading_vehicle_idx = vehicle_idx;
+      leading_vehicle_id = vehicle_id;
       closest_distance = distance;
     }
   }
-  return leading_vehicle_idx;
+  return leading_vehicle_id;
 }
 
+json get_leading_vehicle_by_id(int id, const json &sensor_fusion) {
+  for (int i = 0; i < sensor_fusion.size(); i++) {
+    json car_data = sensor_fusion[i];
+    if (car_data[0] == id) {
+      return car_data;
+    }
+  }
+  assert(false); // vehicle id not found
+}
 
 /* (Olala): update car state machine */
 void update_car_state(const vector<double> car, const json &sensor_fusion) {
@@ -358,11 +367,12 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
   double car_speed = car[2];
   int current_lane = get_lane(car_d);
 
-  int leading_vehicle_idx = get_leading_vehicle_idx(car_s, car_d, sensor_fusion);
+  int leading_vehicle_id = get_leading_vehicle_id(car_s, car_d, sensor_fusion);
+
   json leading_vehicle_data;
   double lv_s, lv_d, lv_dist;
-  if (leading_vehicle_idx != -1) {
-    leading_vehicle_data = sensor_fusion[leading_vehicle_idx];
+  if (leading_vehicle_id != -1) {
+    leading_vehicle_data = get_leading_vehicle_by_id(leading_vehicle_id, sensor_fusion);
     lv_s = leading_vehicle_data[5];
     lv_d = leading_vehicle_data[6];
     lv_dist = lv_s - car_s;
@@ -394,15 +404,20 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
 
 
   if (current_car_state == velocity_keeping) {
-    if (leading_vehicle_idx == -1 || lv_dist > 70.0) {
+    if (leading_vehicle_id == -1 || lv_dist > 70.0) {
       // keep current state
     } else {
       current_car_state = vehicle_following;
     }
   } else if (current_car_state == vehicle_following) {
-    if (leading_vehicle_idx == -1 || lv_dist > 80.0) {
+    double target_d = 2.0 + current_lane * 4.0;
+    double target_d_diff = abs(target_d - car_d);
+    if (leading_vehicle_id == -1 || lv_dist > 80.0) {
       current_car_state = velocity_keeping;
-    } else if (left_is_clear) {
+    } else if(target_d_diff > 0.1) {
+      // don't change lane before cetering current lane
+      std::cout << "Keep in center of lane\n";
+    }else if (left_is_clear) {
       current_car_state = lane_change_left;
       lane_change_target_lane = current_lane - 1;
     } else if (right_is_clear) {
@@ -410,11 +425,11 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
       lane_change_target_lane = current_lane + 1;
     }
   } else if (current_car_state == lane_change_left) {
-    if (current_lane <= lane_change_target_lane || leading_vehicle_idx == -1 || lv_dist > 80.0) {
+    if (current_lane <= lane_change_target_lane || leading_vehicle_id == -1 || lv_dist > 80.0) {
       current_car_state = velocity_keeping;
     }
   } else if (current_car_state == lane_change_right) {
-    if (current_lane >= lane_change_target_lane || leading_vehicle_idx == -1 || lv_dist > 80.0) {
+    if (current_lane >= lane_change_target_lane || leading_vehicle_id == -1 || lv_dist > 80.0) {
       current_car_state = velocity_keeping;
     }
   }
@@ -528,21 +543,27 @@ double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
 }
 
 // Binary cost function that checks whether the car breaks the speed limit
-double speed_limit_cost(vector<deque<double>> traj) {
+double speed_cost(vector<deque<double>> traj) {
   auto traj_s = traj[0];
   auto traj_d = traj[1];
   int traj_size = traj_s.size();
-  double SAFE_MARGIN = SPEED_LIMIT * 0.2;
+  double cost_sum = 0.0;
   for(int i = 1; i < traj_size; i++) {
     double s1 = traj_s[i];
     double s0 = traj_s[i - 1];
-    double v1 = (s1 - s0) / TIME_STEP;
-    // add v1 < 0.0 because we don't want to spot on the highway
-    if (v1 >= SPEED_LIMIT) {
-      return 1.0;
+    double v = (s1 - s0) / TIME_STEP;
+
+    double single_speed_cost;
+    double TARGET_RATIO = 0.9;
+    double target_speed = SPEED_LIMIT * TARGET_RATIO;
+    if (v < target_speed) {
+      single_speed_cost = (v - target_speed) / target_speed;
+    } else {
+      single_speed_cost = (SPEED_LIMIT - v) / (SPEED_LIMIT - target_speed);
     }
+    cost_sum += single_speed_cost * single_speed_cost;
   }
-  return 0.0;
+  return cost_sum / traj_size;
 }
 
 vector<vector<vector<double>>> enumerate_coeffs_combs(
@@ -657,7 +678,7 @@ vector<vector<double>> generate_trajectory(
     double base_speed = min(SPEED_LIMIT, (start_s_d + 5.0));
     double base_time = PREDICT_HORIZON;
 
-    for (double end_sv = max(1.0, base_speed - 5.0); end_sv <= min(SPEED_LIMIT, base_speed + 5.0); end_sv += 2.0) {
+    for (double end_sv = max(1.0, base_speed - 10.0); end_sv <= min(SPEED_LIMIT, base_speed + 5.0); end_sv += 2.0) {
       for (double duration = min(1.0, base_time - 1.0); duration < (base_time + 2.0); duration += 0.2) {
         vector<double> try_end_s = {end_sx, end_sv, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
@@ -684,11 +705,9 @@ vector<vector<double>> generate_trajectory(
       }
     }
   } else if (current_car_state == vehicle_following) {
-    int target_vehicle_index = -1;
-    int leading_vehicle_idx = get_leading_vehicle_idx(start_s, start_d, sensor_fusion);
-    assert(leading_vehicle_idx >= 0 && leading_vehicle_idx < sensor_fusion.size());
+    int leading_vehicle_id = get_leading_vehicle_id(start_s, start_d, sensor_fusion);
+    json leading_vehicle = get_leading_vehicle_by_id(leading_vehicle_id, sensor_fusion);
 
-    json leading_vehicle = sensor_fusion[leading_vehicle_idx];
     double lv_x = leading_vehicle[1];
     double lv_y = leading_vehicle[2];
     double lv_vx = leading_vehicle[3];
@@ -716,7 +735,7 @@ vector<vector<double>> generate_trajectory(
     double base_duration = 4.0;
     double target_d_speed = 0.0;
 
-    for (double duration = (base_duration - 0.5); duration <= (base_duration + 0.5); duration += 0.2) {
+    for (double duration = (base_duration - 1.0); duration <= (base_duration + 1.0); duration += 1.0) {
       vector<double> try_end_d = {target_d, target_d_speed, 0.0};
       auto d_coeffs = JMT(start_d_config, try_end_d, duration);
       if (check_is_JMT_good(d_coeffs, duration)) {
@@ -765,11 +784,11 @@ vector<vector<double>> generate_trajectory(
     auto trajectory = frenet_trajectories[i];
     double cost = 0.0;
     cost += 1000.0 * collision_cost(trajectory, sensor_fusion);
+    // cost += 1000.0 * max_acceleration_cost(trajectory);
+    cost += 500.0 * speed_cost(trajectory);
+    // cost += 1.0 * s_diff_cost(trajectory, end_s);
     // TODO(Olala): target s diff
     // TODO(Olala): target v diff
-    // cost += 1000.0 * max_acceleration_cost(trajectory);
-    // cost += 500.0 * speed_limit_cost(trajectory);
-    // cost += 1.0 * s_diff_cost(trajectory, end_s);
 
     if(cost < min_cost) {
       best_trajectory_idx = i;
