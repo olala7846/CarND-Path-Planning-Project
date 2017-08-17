@@ -675,10 +675,9 @@ vector<vector<double>> generate_trajectory(
       current_car_state == lane_change_right) {
     // very speed and time to goal and fix target_s
     double end_sx = start_s + 30.0;
-    double base_speed = min(SPEED_LIMIT, (start_s_d + 5.0));
     double base_time = PREDICT_HORIZON;
 
-    for (double end_sv = max(1.0, base_speed - 10.0); end_sv <= min(SPEED_LIMIT, base_speed + 5.0); end_sv += 2.0) {
+    for (double end_sv = max(1.0, start_s_d - 10.0); end_sv <= min(SPEED_LIMIT, start_s_d + 10.0); end_sv += 2.0) {
       for (double duration = min(1.0, base_time - 1.0); duration < (base_time + 2.0); duration += 0.2) {
         vector<double> try_end_s = {end_sx, end_sv, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
