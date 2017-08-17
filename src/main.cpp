@@ -30,6 +30,9 @@ const double SPEED_LIMIT = 49.0 * MPH_TO_MPS;
 const double MAX_ACC = 9.0;
 const double MAX_JERK = 9.0;
 
+// The max s value before wrapping around the track back to 0
+const double max_s = 6945.554;
+
 enum CarState {
   velocity_keeping,
   vehicle_following,
@@ -207,6 +210,7 @@ void generate_splines(vector<double> maps_x, vector<double> maps_y) {
 vector<double> getXY(double s, double d, vector<double> maps_s,
     vector<double> maps_x, vector<double> maps_y, vector<double> maps_dx, vector<double> maps_dy)
 {
+  assert(s >= 0.0 && s <= max_s);
   int num_points = maps_x.size();
   // should generate splines before getXY;
   assert(num_points == global_splines.size());
@@ -338,11 +342,11 @@ int get_leading_vehicle_id(double car_s, double car_d, const json &sensor_fusion
     double vehicle_d = car_data[6];
 
     // skip car behind or car in different lanes
-    if (vehicle_s < car_s || abs(vehicle_d - car_d) > 2.0) {
+    if (vehicle_s < car_s || abs(vehicle_d - car_d) > 2.5) {
       continue;
     }
     double distance = vehicle_s - car_s;
-    if (distance < closest_distance) {
+    if (distance < 100.0 && distance < closest_distance) {
       leading_vehicle_id = vehicle_id;
       closest_distance = distance;
     }
@@ -390,7 +394,7 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     double vehicle_s = car_data[5];
     double vehicle_d = car_data[6];
     int vehicle_lane = get_lane(vehicle_d);
-    if (vehicle_s < (car_s + 70.0) && vehicle_s > (car_s - 10.0)) {
+    if (vehicle_s < (car_s + 60.0) && vehicle_s > (car_s - 20.0)) {
       if (vehicle_lane == (current_lane - 1))
         left_is_clear = false;
       if (vehicle_lane == (current_lane + 1))
@@ -497,6 +501,12 @@ double max_acceleration_cost(vector<deque<double>> traj) {
     double s2 = traj_s[i];
     double s1 = traj_s[i - 1];
     double s0 = traj_s[i - 2];
+    // handle edge case around max_s
+    if (s1 < s0)
+      s1 += max_s;
+    if (s2 < s1)
+      s2 += max_s;
+
     double v1 = (s1 - s0) / TIME_STEP;
     double v2 = (s2 - s1) / TIME_STEP;
     double a2 = (v2 / v1) / TIME_STEP;
@@ -648,6 +658,11 @@ vector<vector<double>> generate_trajectory(
     double s0 = prev_s_vals[prev_step_size - 3];
     double s1 = prev_s_vals[prev_step_size - 2];
     double s2 = prev_s_vals[prev_step_size - 1];
+
+    std::cout << "s0,1,2:" << s0 <<", " << s1 << ", " << s2 << std::endl;
+    if (s2 < s1) s1 -= max_s;
+    if (s1 < s0) s0 -= max_s;
+
     double d0 = prev_d_vals[prev_step_size - 3];
     double d1 = prev_d_vals[prev_step_size - 2];
     double d2 = prev_d_vals[prev_step_size - 1];
@@ -667,19 +682,18 @@ vector<vector<double>> generate_trajectory(
   }
   vector<double> start_s_config = {start_s, start_s_d, start_s_dd};
   vector<double> start_d_config = {start_d, start_d_d, start_d_dd};
-  // std::cout << "Start config:" << start_s << "," << start_s_d << ", " << start_s_dd << std::endl;
 
   // Velocity keeping
   if (current_car_state == velocity_keeping ||
       current_car_state == lane_change_left ||
       current_car_state == lane_change_right) {
     // very speed and time to goal and fix target_s
-    double end_sx = start_s + 30.0;
+    double end_s = start_s + 30.0;
     double base_time = PREDICT_HORIZON;
 
     for (double end_sv = max(1.0, start_s_d - 10.0); end_sv <= min(SPEED_LIMIT, start_s_d + 10.0); end_sv += 2.0) {
       for (double duration = min(1.0, base_time - 1.0); duration < (base_time + 2.0); duration += 0.2) {
-        vector<double> try_end_s = {end_sx, end_sv, 0.0};
+        vector<double> try_end_s = {end_s, end_sv, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
         if (check_is_JMT_good(s_coeffs, duration)){
           possible_s_coeffs.push_back(s_coeffs);
@@ -704,7 +718,10 @@ vector<vector<double>> generate_trajectory(
       }
     }
   } else if (current_car_state == vehicle_following) {
-    int leading_vehicle_id = get_leading_vehicle_id(start_s, start_d, sensor_fusion);
+
+    double car_s = car["s"];
+    double car_d = car["d"];
+    int leading_vehicle_id = get_leading_vehicle_id(car_s, car_d, sensor_fusion);
     json leading_vehicle = get_leading_vehicle_by_id(leading_vehicle_id, sensor_fusion);
 
     double lv_x = leading_vehicle[1];
@@ -715,17 +732,19 @@ vector<vector<double>> generate_trajectory(
     double lv_d = leading_vehicle[6];
 
     double lv_speed = sqrt(lv_vx * lv_vx + lv_vy * lv_vy);
-    double target_v = min(SPEED_LIMIT, lv_speed);
+    double desire_speed = min(SPEED_LIMIT * 0.9, lv_speed);
     double REACTION_TIME = 0.5;
-    double target_distance_ahead = target_v * REACTION_TIME + 5.0;
+    double target_distance_ahead = desire_speed * REACTION_TIME + 5.0;
 
-    for (double duration = 1.0; duration <= 10.0; duration += 0.5) {
-      double target_s = lv_s + lv_speed * duration - target_distance_ahead;
-      vector<double> try_end_s = {target_s, target_v, 0.0};
-      auto s_coeffs = JMT(start_s_config, try_end_s, duration);
-      bool is_traj_good = check_is_JMT_good(s_coeffs, duration);
-      if (is_traj_good) {
-        possible_s_coeffs.push_back(s_coeffs);
+    for (double duration = 1.0; duration <= 10.0; duration += 1.0) {
+      for(double target_v = (desire_speed - 5.0); target_v <= desire_speed; target_v += 5.0) {
+        double target_s = lv_s + lv_speed * duration - target_distance_ahead;
+        vector<double> try_end_s = {target_s, target_v, 0.0};
+        auto s_coeffs = JMT(start_s_config, try_end_s, duration);
+        bool is_traj_good = check_is_JMT_good(s_coeffs, duration);
+        if (is_traj_good) {
+          possible_s_coeffs.push_back(s_coeffs);
+        }
       }
     }
 
@@ -768,7 +787,7 @@ vector<vector<double>> generate_trajectory(
       double s = poly_eval(t, s_coeffs);
       double d = poly_eval(t, d_coeffs);
 
-      next_s_vals.push_back(s);
+      next_s_vals.push_back(fmod((s + max_s), max_s));
       next_d_vals.push_back(d);
     }
 
@@ -837,8 +856,6 @@ int main() {
 
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
-  // The max s value before wrapping around the track back to 0
-  double max_s = 6945.554;
 
   ifstream in_map_(map_file_.c_str(), ifstream::in);
 
