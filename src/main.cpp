@@ -32,6 +32,7 @@ const double MAX_JERK = 9.0;
 
 // The max s value before wrapping around the track back to 0
 const double max_s = 6945.554;
+double half_max_s = max_s / 2.0;
 
 enum CarState {
   velocity_keeping,
@@ -75,6 +76,12 @@ vector<double> derivative(vector<double> coeff) {
     derivative_coeffs.push_back(i * coeff[i]);
   }
   return derivative_coeffs;
+}
+
+double s_dist(double car_s, double target_s) {
+  if (target_s < (car_s - half_max_s)) target_s += max_s;
+  if (target_s > (car_s + half_max_s)) target_s -= max_s;
+  return target_s - car_s;
 }
 
 int ClosestWaypoint(double x, double y, vector<double> maps_x, vector<double> maps_y)
@@ -341,11 +348,13 @@ int get_leading_vehicle_id(double car_s, double car_d, const json &sensor_fusion
     double vehicle_s = car_data[5];
     double vehicle_d = car_data[6];
 
-    // skip car behind or car in different lanes
-    if (vehicle_s < car_s || abs(vehicle_d - car_d) > 2.5) {
+    // distance to target, positive means ahead, negative means behind
+    car_s = fmod(car_s, max_s);
+    double distance = s_dist(car_s, vehicle_s);
+
+    if (distance < 0 || abs(vehicle_d - car_d) > 2.5) {
       continue;
     }
-    double distance = vehicle_s - car_s;
     if (distance < 100.0 && distance < closest_distance) {
       leading_vehicle_id = vehicle_id;
       closest_distance = distance;
@@ -540,12 +549,10 @@ double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
 
       double target_speed_s = sqrt(target_vx * target_vx + target_vy * target_vy);
       double target_future_s = target_s + target_speed_s * delta_t;
-      if (car_d - 3.0 < target_d && target_d < car_d + 3.0 && target_future_s > car_s) {
-        double distance = abs(target_future_s - car_s);
-        if (distance < 5.0) {
-          std::cout << "will kiss\n";
-          return 1.0;
-        }
+      double s_distance = s_dist(car_s, target_future_s);
+      if (abs(car_d - target_d) < 3.0 && abs(s_distance) < 5.0) {
+        std::cout << "will kiss:" << car_d << ", " << target_d << "(" << id << ")\n";
+        return 1.0;
       }
     }
   }
@@ -659,9 +666,9 @@ vector<vector<double>> generate_trajectory(
     double s1 = prev_s_vals[prev_step_size - 2];
     double s2 = prev_s_vals[prev_step_size - 1];
 
-    std::cout << "s0,1,2:" << s0 <<", " << s1 << ", " << s2 << std::endl;
     if (s2 < s1) s1 -= max_s;
     if (s1 < s0) s0 -= max_s;
+    std::cout << "s0,1,2:" << s0 <<", " << s1 << ", " << s2 << std::endl;
 
     double d0 = prev_d_vals[prev_step_size - 3];
     double d1 = prev_d_vals[prev_step_size - 2];
@@ -688,11 +695,11 @@ vector<vector<double>> generate_trajectory(
       current_car_state == lane_change_left ||
       current_car_state == lane_change_right) {
     // very speed and time to goal and fix target_s
-    double end_s = start_s + 30.0;
+    double end_s = start_s + max(start_s_d, 5.0) * PREDICT_HORIZON;
     double base_time = PREDICT_HORIZON;
 
-    for (double end_sv = max(1.0, start_s_d - 10.0); end_sv <= min(SPEED_LIMIT, start_s_d + 10.0); end_sv += 2.0) {
-      for (double duration = min(1.0, base_time - 1.0); duration < (base_time + 2.0); duration += 0.2) {
+    for (double end_sv = max(5.0, start_s_d - 5.0); end_sv <= min(SPEED_LIMIT * 0.9, start_s_d + 5.0); end_sv += 1.0) {
+      for (double duration = PREDICT_HORIZON - 0.5; duration <= PREDICT_HORIZON + 3.0; duration += 0.5) {
         vector<double> try_end_s = {end_s, end_sv, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
         if (check_is_JMT_good(s_coeffs, duration)){
@@ -738,8 +745,12 @@ vector<vector<double>> generate_trajectory(
 
     for (double duration = 1.0; duration <= 10.0; duration += 1.0) {
       for(double target_v = (desire_speed - 5.0); target_v <= desire_speed; target_v += 5.0) {
+
         double target_s = lv_s + lv_speed * duration - target_distance_ahead;
-        vector<double> try_end_s = {target_s, target_v, 0.0};
+        // handle target become very small when over max_s
+        double target_dist_ahead = s_dist(start_s, target_s);
+
+        vector<double> try_end_s = {start_s + target_dist_ahead, target_v, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
         bool is_traj_good = check_is_JMT_good(s_coeffs, duration);
         if (is_traj_good) {
