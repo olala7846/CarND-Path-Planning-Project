@@ -217,7 +217,7 @@ void generate_splines(vector<double> maps_x, vector<double> maps_y) {
 vector<double> getXY(double s, double d, vector<double> maps_s,
     vector<double> maps_x, vector<double> maps_y, vector<double> maps_dx, vector<double> maps_dy)
 {
-  assert(s >= 0.0 && s <= max_s);
+  assert(0.0 <= s && s <= max_s);
   int num_points = maps_x.size();
   // should generate splines before getXY;
   assert(num_points == global_splines.size());
@@ -228,12 +228,21 @@ vector<double> getXY(double s, double d, vector<double> maps_s,
 	{
 		prev_wp++;
 	}
+  // handle last waypoin
+  if (prev_wp == -1) {
+    prev_wp = maps_x.size() - 1;
+  }
 
 	int wp2 = (prev_wp+1)%maps_x.size();
 
   // fit spline
   auto spline_func = global_splines[prev_wp];
-  double ratio = (s - maps_s[prev_wp]) / (maps_s[wp2]-maps_s[prev_wp]);
+  // handle next_wp == 0 (s[0] will be 0.0)
+  double next_wp_s = maps_s[wp2];
+  if(next_wp_s == 0.0) {
+    next_wp_s = max_s;
+  }
+  double ratio = (s - maps_s[prev_wp]) / (next_wp_s - maps_s[prev_wp]);
 
   // Points in car coordinates on prev_wp
   double x0 = maps_x[prev_wp];
