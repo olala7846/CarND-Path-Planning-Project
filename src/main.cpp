@@ -26,7 +26,7 @@ double rad2deg(double x) { return x * 180 / pi(); }
 
 const double TIME_STEP = 0.02;
 const double MPH_TO_MPS = 0.44704;  // miles per hour to meters per second
-const double SPEED_LIMIT = 49.0 * MPH_TO_MPS;
+const double SPEED_LIMIT = 49.5 * MPH_TO_MPS;
 const double MAX_ACC = 9.0;
 const double MAX_JERK = 9.0;
 
@@ -703,19 +703,22 @@ vector<vector<double>> generate_trajectory(
   if (current_car_state == velocity_keeping ||
       current_car_state == lane_change_left ||
       current_car_state == lane_change_right) {
-    // very speed and time to goal and fix target_s
-    double end_s = start_s + max(start_s_d, 5.0) * PREDICT_HORIZON;
-    double base_time = PREDICT_HORIZON;
 
-    for (double end_sv = max(5.0, start_s_d - 5.0); end_sv <= min(SPEED_LIMIT * 0.9, start_s_d + 5.0); end_sv += 1.0) {
-      for (double duration = PREDICT_HORIZON - 0.5; duration <= PREDICT_HORIZON + 3.0; duration += 0.5) {
-        vector<double> try_end_s = {end_s, end_sv, 0.0};
+    double end_s = start_s + 30.0;
+    double min_duration = 1.0;
+    double max_duration = 5.0;
+    for (double duration = min_duration; duration <= max_duration; duration += 0.5) {
+      double min_speed = max(0.0, start_s_d - 20.0);
+      double max_speed = min(SPEED_LIMIT, start_s_d + 20.0);
+      for (double target_speed = min_speed; target_speed < max_speed; target_speed += 2.5) {
+        auto try_end_s = {end_s, target_speed, duration};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
         if (check_is_JMT_good(s_coeffs, duration)){
           possible_s_coeffs.push_back(s_coeffs);
         }
       }
     }
+
 
     int target_lane = get_lane(start_d);
     if (current_car_state == lane_change_left || current_car_state == lane_change_right) {
