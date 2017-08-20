@@ -450,11 +450,19 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
       lane_change_target_lane = current_lane + 1;
     }
   } else if (current_car_state == lane_change_left) {
-    if (current_lane <= lane_change_target_lane || leading_vehicle_id == -1 || lv_dist > 80.0) {
+    double target_d = 2.0 + lane_change_target_lane * 4.0;
+    double target_d_diff = abs(target_d - car_d);
+    if (target_d_diff >= 0.1) {
+      // center current lane
+    } else {
       current_car_state = velocity_keeping;
     }
   } else if (current_car_state == lane_change_right) {
-    if (current_lane >= lane_change_target_lane || leading_vehicle_id == -1 || lv_dist > 80.0) {
+    double target_d = 2.0 + lane_change_target_lane * 4.0;
+    double target_d_diff = abs(target_d - car_d);
+    if (target_d_diff >= 0.1) {
+      // cener curerrent lane
+    } else {
       current_car_state = velocity_keeping;
     }
   }
@@ -735,7 +743,8 @@ vector<vector<double>> generate_trajectory(
 
 
     int target_lane = get_lane(start_d);
-    if (current_car_state == lane_change_left || current_car_state == lane_change_right) {
+    if (current_car_state == lane_change_left ||
+        current_car_state == lane_change_right) {
       target_lane = lane_change_target_lane;
     }
     double target_d = 2.0 + 4.0 * target_lane;
@@ -844,6 +853,7 @@ vector<vector<double>> generate_trajectory(
     // cost += 1.0 * s_diff_cost(trajectory, end_s);
     // TODO(Olala): target s diff
     // TODO(Olala): target v diff
+    // TODO(Olala): steering angle check
 
     if(cost < min_cost) {
       best_trajectory_idx = i;
@@ -869,7 +879,7 @@ vector<vector<double>> generate_trajectory(
   for(int i=0; i < next_s_vals.size(); i++) {
     double s = next_s_vals[i];
     double d = next_d_vals[i];
-    // std::cout << "Frenet[" << i << "]:" << s << "," << d << "\n";
+    std::cout << "Frenet[" << i << "]:" << s << "," << d << "\n";
     vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
     next_x_vals.push_back(point[0]);
     next_y_vals.push_back(point[1]);
