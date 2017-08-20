@@ -384,6 +384,7 @@ json get_leading_vehicle_by_id(int id, const json &sensor_fusion) {
 
 /* (Olala): update car state machine */
 void update_car_state(const vector<double> car, const json &sensor_fusion) {
+
   double car_s = car[0];
   double car_d = car[1];
   double car_speed = car[2];
@@ -414,7 +415,7 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     double vehicle_dist = s_dist(car_s, vehicle_s);
 
     int vehicle_lane = get_lane(vehicle_d);
-    if (-20.0 <= vehicle_dist && vehicle_dist <= 60.0) {
+    if (-20.0 <= vehicle_dist && vehicle_dist <= 50.0) {
       if (vehicle_lane == (current_lane - 1))
         left_is_clear = false;
       if (vehicle_lane == (current_lane + 1))
@@ -572,8 +573,9 @@ double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
       double target_speed_s = sqrt(target_vx * target_vx + target_vy * target_vy);
       double target_future_s = target_s + target_speed_s * delta_t;
       double s_distance = s_dist(car_s, target_future_s);
-      if (abs(car_d - target_d) < 3.0 && abs(s_distance) < 5.0) {
-        std::cout << "will kiss car " << id << " at time " << delta_t << " at" << target_future_s << ", " << target_d << std::endl;
+      if (abs(car_d - target_d) < 3.0 && (0.0 < s_distance && s_distance < 5.0)) {
+        std::cout << "will kiss car " << id << " at time " << delta_t << std::endl;
+        std::cout << "future car_s:" << car_s << " target_s: " << target_future_s << std::endl;
         return 1.0;
       }
     }
@@ -666,6 +668,7 @@ vector<vector<double>> generate_trajectory(
   // setup start config
   double start_s, start_s_d, start_s_dd;
   double start_d, start_d_d, start_d_dd;
+  double start_t_offset = 0.0;
 
   auto prev_s_vals = prev_frenet_trajectory[0];
   auto prev_d_vals = prev_frenet_trajectory[1];
@@ -692,18 +695,19 @@ vector<vector<double>> generate_trajectory(
 
     // TODO(Olala): save the previously end config directly
     assert(prev_s_vals.size() == previous_path_x.size());
-    int prev_step_size = prev_s_vals.size();
-    double s0 = prev_s_vals[prev_step_size - 3];
-    double s1 = prev_s_vals[prev_step_size - 2];
-    double s2 = prev_s_vals[prev_step_size - 1];
+    int prev_s_size = prev_s_vals.size();
+    double s0 = prev_s_vals[prev_s_size - 3];
+    double s1 = prev_s_vals[prev_s_size - 2];
+    double s2 = prev_s_vals[prev_s_size - 1];
+    start_t_offset = prev_s_size * TIME_STEP;
 
     if (s2 < s1) s1 -= max_s;
     if (s1 < s0) s0 -= max_s;
     std::cout << "s0,1,2:" << s0 <<", " << s1 << ", " << s2 << std::endl;
 
-    double d0 = prev_d_vals[prev_step_size - 3];
-    double d1 = prev_d_vals[prev_step_size - 2];
-    double d2 = prev_d_vals[prev_step_size - 1];
+    double d0 = prev_d_vals[prev_s_size - 3];
+    double d1 = prev_d_vals[prev_s_size - 2];
+    double d2 = prev_d_vals[prev_s_size - 1];
     double vs1 = (s1 - s0) / TIME_STEP;
     double vs2 = (s2 - s1) / TIME_STEP;
     double vd1 = (d1 - d0) / TIME_STEP;
@@ -774,18 +778,17 @@ vector<vector<double>> generate_trajectory(
     double lv_d = leading_vehicle[6];
 
     double lv_speed = sqrt(lv_vx * lv_vx + lv_vy * lv_vy);
-    double desire_speed = min(SPEED_LIMIT * 0.9, lv_speed);
+    double target_v = min(SPEED_LIMIT * 0.9, lv_speed);
     double REACTION_TIME = 0.5;
-    double target_distance_ahead = desire_speed * REACTION_TIME + 5.0;
+    double safe_dist_to_lv = target_v * REACTION_TIME + 5.0;
 
-    for (double duration = 1.0; duration <= 10.0; duration += 1.0) {
-      for(double target_v = (desire_speed - 5.0); target_v <= desire_speed; target_v += 5.0) {
-
-        double target_s = lv_s + lv_speed * duration - target_distance_ahead;
+    for (double duration = 1.0; duration <= 10.0; duration += 0.5) {
+      for (double target_dist_ahead = safe_dist_to_lv; target_dist_ahead <= safe_dist_to_lv + 5.0; target_dist_ahead += 2.5) {
+        double target_s = lv_s + lv_speed * (duration + start_t_offset) - target_dist_ahead;
         // handle target become very small when over max_s
-        double target_dist_ahead = s_dist(start_s, target_s);
+        double dist_ahead = s_dist(start_s, target_s);
 
-        vector<double> try_end_s = {start_s + target_dist_ahead, target_v, 0.0};
+        vector<double> try_end_s = {start_s + dist_ahead, target_v, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
         bool is_traj_good = check_is_JMT_good(s_coeffs, duration);
         if (is_traj_good) {
@@ -879,7 +882,7 @@ vector<vector<double>> generate_trajectory(
   for(int i=0; i < next_s_vals.size(); i++) {
     double s = next_s_vals[i];
     double d = next_d_vals[i];
-    std::cout << "Frenet[" << i << "]:" << s << "," << d << "\n";
+    // std::cout << "Frenet[" << i << "]:" << s << "," << d << "\n";
     vector<double> point = getXY(s, d, maps_s, maps_x, maps_y, maps_dx, maps_dy);
     next_x_vals.push_back(point[0]);
     next_y_vals.push_back(point[1]);
