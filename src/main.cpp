@@ -411,8 +411,10 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     double vehicle_vy = car_data[4];
     double vehicle_s = car_data[5];
     double vehicle_d = car_data[6];
+    double vehicle_dist = s_dist(car_s, vehicle_s);
+
     int vehicle_lane = get_lane(vehicle_d);
-    if (vehicle_s < (car_s + 60.0) && vehicle_s > (car_s - 20.0)) {
+    if (-20.0 <= vehicle_dist && vehicle_dist <= 60.0) {
       if (vehicle_lane == (current_lane - 1))
         left_is_clear = false;
       if (vehicle_lane == (current_lane + 1))
@@ -424,8 +426,9 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
       right_is_clear = false;
   }
 
-
   if (current_car_state == velocity_keeping) {
+    double target_d = 2.0 + current_lane * 4.0;
+    double target_d_diff = abs(target_d - car_d);
     if (leading_vehicle_id == -1 || lv_dist > 70.0) {
       // keep current state
     } else {
@@ -544,7 +547,7 @@ double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
 
     double car_s = traj_s[i];
     double car_d = traj_d[i];
-    double delta_t = i * TIME_STEP;
+    double delta_t = (i + 1) * TIME_STEP;
 
     for (int car_idx = 0; car_idx < sensor_fusion.size(); car_idx++) {
       json car_data = sensor_fusion[car_idx];
@@ -556,11 +559,13 @@ double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
       double target_s = car_data[5];
       double target_d = car_data[6];
 
+      // (Assume vehicle stay in the same lane with same speed,
+      // use absolue speed as frenet s speed
       double target_speed_s = sqrt(target_vx * target_vx + target_vy * target_vy);
       double target_future_s = target_s + target_speed_s * delta_t;
       double s_distance = s_dist(car_s, target_future_s);
       if (abs(car_d - target_d) < 3.0 && abs(s_distance) < 5.0) {
-        std::cout << "will kiss:" << car_d << ", " << target_d << "(" << id << ")\n";
+        std::cout << "will kiss car " << id << " at time " << delta_t << " at" << target_future_s << ", " << target_d << std::endl;
         return 1.0;
       }
     }
@@ -573,23 +578,32 @@ double speed_cost(vector<deque<double>> traj) {
   auto traj_s = traj[0];
   auto traj_d = traj[1];
   int traj_size = traj_s.size();
-  double cost_sum = 0.0;
+
+  double min_speed = SPEED_LIMIT;
+  double max_speed = 0.0;
+
   for(int i = 1; i < traj_size; i++) {
     double s1 = traj_s[i];
     double s0 = traj_s[i - 1];
     double v = (s1 - s0) / TIME_STEP;
 
-    double single_speed_cost;
-    double TARGET_RATIO = 0.9;
-    double target_speed = SPEED_LIMIT * TARGET_RATIO;
-    if (v < target_speed) {
-      single_speed_cost = (v - target_speed) / target_speed;
-    } else {
-      single_speed_cost = (SPEED_LIMIT - v) / (SPEED_LIMIT - target_speed);
-    }
-    cost_sum += single_speed_cost * single_speed_cost;
+    min_speed = min_speed > v? v: min_speed;
+    max_speed = max_speed < v? v: max_speed;
   }
-  return cost_sum / traj_size;
+
+  double TARGET_RATIO = 0.9;
+  double target_speed = SPEED_LIMIT * TARGET_RATIO;
+  double min_speed_cost = 0.0;
+  double max_speed_cost = 0.0;
+  if (min_speed < target_speed) {
+    min_speed_cost = min_speed / target_speed;
+  }
+
+  if (max_speed > target_speed) {
+    max_speed_cost = (max_speed - target_speed) / (SPEED_LIMIT - target_speed);
+  }
+
+  return (max_speed_cost + min_speed_cost) / 2.0;
 }
 
 vector<vector<vector<double>>> enumerate_coeffs_combs(
