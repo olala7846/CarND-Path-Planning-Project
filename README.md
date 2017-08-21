@@ -1,134 +1,84 @@
 # CarND-Path-Planning-Project
 Self-Driving Car Engineer Nanodegree Program
-   
-### Simulator. You can download the Term3 Simulator BETA which contains the Path Planning Project from the [releases tab](https://github.com/udacity/self-driving-car-sim/releases).
+##### Authon: Hsin-Cheng Chao (olala7846@gmail.com)
 
-In this project your goal is to safely navigate around a virtual highway with other traffic that is driving +-10 MPH of the 50 MPH speed limit. You will be provided the car's localization and sensor fusion data, there is also a sparse map list of waypoints around the highway. The car should try to go as close as possible to the 50 MPH speed limit, which means passing slower traffic when possible, note that other cars will try to change lanes too. The car should avoid hitting other cars at all cost as well as driving inside of the marked road lanes at all times, unless going from one lane to another. The car should be able to make one complete loop around the 6946m highway. Since the car is trying to go 50 MPH, it should take a little over 5 minutes to complete 1 loop. Also the car should not experience total acceleration over 10 m/s^2 and jerk that is greater than 50 m/s^3.
+##### Note:
+This project was forked from Udacity and has been modified heavily, for setup and build detail, please reference the [Udacity's REPO](https://github.com/udacity/CarND-Path-Planning-Project). for the project requirement, please reference the [Rebrics](https://review.udacity.com/#!/rubrics/1020/view)
 
-#### The map of the highway is in data/highway_map.txt
-Each waypoint in the list contains  [x,y,s,dx,dy] values. x and y are the waypoint's map coordinate position, the s value is the distance along the road to get to that waypoint in meters, the dx and dy values define the unit normal vector pointing outward of the highway loop.
+## Reflection
+My implementation was based on the [BMW/Bosch paper](http://ieeexplore.ieee.org/abstract/document/5509799/) and modified to fit the simulator environment.
 
-The highway's waypoints loop around so the frenet s value, distance along the road, goes from 0 to 6945.554.
+### System Architecture:
+The program communicate to the Udacity simulator through web socket. The simulator sends some messages to the c++ program:
 
-## Basic Build Instructions
+1. The current car state (Global Cartesian coordinate, Frenet Coordinate, car speed ...) 
+2. Previouly unexecuted trajectory in Cartesian coordinates.
+3. Sensor fusion data (position and speed of other vehicles)
 
-1. Clone this repo.
-2. Make a build directory: `mkdir build && cd build`
-3. Compile: `cmake .. && make`
-4. Run it: `./path_planning`.
+The main.cpp should returns the updated future trajectories in Cartesian coordinate.
 
-Here is the data provided from the Simulator to the C++ Program
+#### Conversion between coordinate system.
+Most of my work (FSM, trajectory generation) was done under the Frenet coordinate system. So I use the `generate_splines()` function to generate the spline once and store it in memory before the sockets starts, for every waypoint I use six other waypints to generate a spline and use the spline to convert the Frenet coordinate to Cartisian coordinate (See the `getXY` function. 
 
-#### Main car's localization Data (No Noise)
+#### Path Plaining
+The Path plaining algorithm was done using a FSM (finite state machine) and JMT (jerk minimization trajectory) with some cost functions. more details below. 
 
-["x"] The car's x position in map coordinates
+#### Finite State Machine
+I created 5 states for the FSM (See the `update_states` function for more details):
 
-["y"] The car's y position in map coordinates
+1. Velocity Keeping: In this state, the vehicle will try to keep it's speed as high as possible (I use speed_limit * 0.9) as a safe speed. Whenver the car detects vehicle close ahead, it will transition the state to Vehicle Following.
+2. Vehicle Following: The car will try to keep a safe distance and speed from the vehicle ahead (5.0 + leading_vehicle_speed * reaction_time) and try to change lane when it's safe to do so.
+3. Lane Change Left / Lane Change Right: Car will try to move to the target lane in a safe s and d trajectory.
 
-["s"] The car's s position in frenet coordinates
+#### Jerk Minimization Trajectory
+I use the jerk minimization algorithm and use the end of the previously trajectory as the start config state of the JMT and generate many possible end states according to the current FSM states.
 
-["d"] The car's d position in frenet coordinates
+1. Velocity Keeping / Land change Left / Lane Change Right: The vehicle will try to end go to the target position (30 meters ahead) with different duration and end velocity as end config and choose the one with min cost.
 
-["yaw"] The car's yaw angle in the map
+```
+// psudo code for sampling different end config
+double target_duration = 2.0;
+double target_speed = speed_limit * 0.9;
+for d in range(target_duration - 1.0, target_duration + 1.0, 0.1)
+	for v in range(target_speed - 10.0, target_speed + 10.0, 1.0) {
+		end_config = {car_s + 30.0, v, 0.0}
+		trajectory = JMT(start_config, end_config, d)
+	}
+}
+```
 
-["speed"] The car's speed in MPH
+2. Vehicle Following: In this state the vehicle will try to keep the same speed and a safe distance to the leading vehicle, different from other states, since the end config speed and distance are basically decided, I sample different duration (time to finish) as the end config for the JMT.
 
-#### Previous path data given to the Planner
+```
+// psudo code for vehicle following JMT sampling
+target_duration = 2.0;
+reaction_time = 0.5;
+safe_distance = 5.0 + lv_s * reaction_time;  // lv: leading vehicle
+for d in range(target_duration - 1.0, d <= target_duration +5.0, 0.5) {
+	lv_future_s = lv_s + lv_speed * d  // calculate the position of lv after duration
+	end_config = {lv_future_s - safe_distance, lv_speed, 0.0}
+	trajectory = JMT(start_config, end_config, d)
+}
+```
 
-//Note: Return the previous list but with processed points removed, can be a nice tool to show how far along
-the path has processed since last time. 
+#### Cost function and trajectory validation
+Before calculating the cost, I first validate the trajectory speed and acceleration by calculating the derivative of the generate trajectoy. The speed should not break the speed limit and should not go below 0.0, and the acceleration should not exceed the project rubric requirements (10m/s*s). 
 
-["previous_path_x"] The previous list of x points previously given to the simulator
+After that I calculates the cost of each sampled valid trajectories, by checking the collision, min/max speed, whether it stays in the center of lane ...
 
-["previous_path_y"] The previous list of y points previously given to the simulator
+```
+// psudo code for cost function
+min_cost = 1e10;
+best_traj = None;
+for traj in possible_trajectories:
+	cost = 0.0
+	cost += 1000 * collision_cost(traj, sensor_fustion)
+	cost += 50 * max_min_speed_cost(traj)
+	cost += 25 * center_lane_cost(traj)
+	if cost < min_cost:
+	    min_cost = cost
+	    best_traj = traj
+```
 
-#### Previous path's end s and d values 
-
-["end_path_s"] The previous list's last point's frenet s value
-
-["end_path_d"] The previous list's last point's frenet d value
-
-#### Sensor Fusion Data, a list of all other car's attributes on the same side of the road. (No Noise)
-
-["sensor_fusion"] A 2d vector of cars and then that car's [car's unique ID, car's x position in map coordinates, car's y position in map coordinates, car's x velocity in m/s, car's y velocity in m/s, car's s position in frenet coordinates, car's d position in frenet coordinates. 
-
-## Details
-
-1. The car uses a perfect controller and will visit every (x,y) point it recieves in the list every .02 seconds. The units for the (x,y) points are in meters and the spacing of the points determines the speed of the car. The vector going from a point to the next point in the list dictates the angle of the car. Acceleration both in the tangential and normal directions is measured along with the jerk, the rate of change of total Acceleration. The (x,y) point paths that the planner recieves should not have a total acceleration that goes over 10 m/s^2, also the jerk should not go over 50 m/s^3. (NOTE: As this is BETA, these requirements might change. Also currently jerk is over a .02 second interval, it would probably be better to average total acceleration over 1 second and measure jerk from that.
-
-2. There will be some latency between the simulator running and the path planner returning a path, with optimized code usually its not very long maybe just 1-3 time steps. During this delay the simulator will continue using points that it was last given, because of this its a good idea to store the last points you have used so you can have a smooth transition. previous_path_x, and previous_path_y can be helpful for this transition since they show the last points given to the simulator controller with the processed points already removed. You would either return a path that extends this previous path or make sure to create a new path that has a smooth transition with this last path.
-
-## Tips
-
-A really helpful resource for doing this project and creating smooth trajectories was using http://kluge.in-chemnitz.de/opensource/spline/, the spline function is in a single hearder file is really easy to use.
-
----
-
-## Dependencies
-
-* cmake >= 3.5
- * All OSes: [click here for installation instructions](https://cmake.org/install/)
-* make >= 4.1
-  * Linux: make is installed by default on most Linux distros
-  * Mac: [install Xcode command line tools to get make](https://developer.apple.com/xcode/features/)
-  * Windows: [Click here for installation instructions](http://gnuwin32.sourceforge.net/packages/make.htm)
-* gcc/g++ >= 5.4
-  * Linux: gcc / g++ is installed by default on most Linux distros
-  * Mac: same deal as make - [install Xcode command line tools]((https://developer.apple.com/xcode/features/)
-  * Windows: recommend using [MinGW](http://www.mingw.org/)
-* [uWebSockets](https://github.com/uWebSockets/uWebSockets)
-  * Run either `install-mac.sh` or `install-ubuntu.sh`.
-  * If you install from source, checkout to commit `e94b6e1`, i.e.
-    ```
-    git clone https://github.com/uWebSockets/uWebSockets 
-    cd uWebSockets
-    git checkout e94b6e1
-    ```
-
-## Editor Settings
-
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
-
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
-
-## Code Style
-
-Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
-
-## Project Instructions and Rubric
-
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
-
-
-## Call for IDE Profiles Pull Requests
-
-Help your fellow students!
-
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to ensure
-that students don't feel pressured to use one IDE or another.
-
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
-
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
-
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
-
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
-
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
+### Conclusion
+The algorithm itself is quite simple, but the coding parts are complicated. There are many edge cases needs to handle (e.g. when the s coordinates when from max_s to 0.0, many thing could break). Also it took me lots of time trial and error trying decide how much end configurations to sample for the JMT. The less trajectory sampled, the less time it take to find the best trajectory (The system will be more responsive but it is more possible to find a less optimal trajectory).
