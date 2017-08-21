@@ -268,7 +268,6 @@ vector<double> getXY(double s, double d, vector<double> maps_s,
   y = y + d * ny;
 
 	return {x, y};
-
 }
 
 /* JMT: jerk minimized trajectory */
@@ -401,6 +400,7 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     lv_dist = lv_s - car_s;
   }
 
+  double KEEP_SPEED_DIST = 50.0;
   bool left_is_clear = true;
   bool right_is_clear = true;
   for (int vid = 0; vid < sensor_fusion.size(); vid++) {
@@ -415,7 +415,7 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
     double vehicle_dist = s_dist(car_s, vehicle_s);
 
     int vehicle_lane = get_lane(vehicle_d);
-    if (-20.0 <= vehicle_dist && vehicle_dist <= 50.0) {
+    if (-20.0 <= vehicle_dist && vehicle_dist <= (KEEP_SPEED_DIST + 10.0)) {
       if (vehicle_lane == (current_lane - 1))
         left_is_clear = false;
       if (vehicle_lane == (current_lane + 1))
@@ -430,7 +430,7 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
   if (current_car_state == velocity_keeping) {
     double target_d = 2.0 + current_lane * 4.0;
     double target_d_diff = abs(target_d - car_d);
-    if (leading_vehicle_id == -1 || lv_dist > 70.0) {
+    if (leading_vehicle_id == -1 || lv_dist > KEEP_SPEED_DIST) {
       // keep current state
     } else {
       current_car_state = vehicle_following;
@@ -438,7 +438,7 @@ void update_car_state(const vector<double> car, const json &sensor_fusion) {
   } else if (current_car_state == vehicle_following) {
     double target_d = 2.0 + current_lane * 4.0;
     double target_d_diff = abs(target_d - car_d);
-    if (leading_vehicle_id == -1 || lv_dist > 80.0) {
+    if (leading_vehicle_id == -1 || lv_dist > (KEEP_SPEED_DIST + 10.0)) {
       current_car_state = velocity_keeping;
     } else if(target_d_diff > 0.1) {
       // don't change lane before cetering current lane
@@ -548,7 +548,7 @@ double max_acceleration_cost(vector<deque<double>> traj) {
   return 0.0;
 }
 
-double new_collision_cost(vector<deque<double>> traj, vector<vector<vector<double>>> predictions) {
+double collision_cost(vector<deque<double>> traj, vector<vector<vector<double>>> predictions) {
   auto traj_s = traj[0];
   auto traj_d = traj[1];
   assert(predictions[0].size() == traj_s.size());
@@ -567,7 +567,9 @@ double new_collision_cost(vector<deque<double>> traj, vector<vector<vector<doubl
       if (abs(eagle_d - target_d) < 3.0) {
         double s_distance = s_dist(eagle_s, target_s);
         if (abs(s_distance) < 5.0) { // will collide
-          std::cout << "Will collision\n";
+          std::cout << "Will kiss: \n";
+          std::cout << "i:" << i << ", eagle_s:" << eagle_s << ", eagle_d" << eagle_d;
+          std::cout << ", target_s:" << target_s << ", target_d" << target_d << std::endl;
           return 1.0;
         }
       }
@@ -576,40 +578,6 @@ double new_collision_cost(vector<deque<double>> traj, vector<vector<vector<doubl
   return 0.0;
 }
 
-// Binary cost funciton for car collision detection
-double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
-  auto traj_s = traj[0];
-  auto traj_d = traj[1];
-  for (int i = 0; i < traj_s.size(); i++) {
-
-    double car_s = traj_s[i];
-    double car_d = traj_d[i];
-    double delta_t = (i + 1) * TIME_STEP;
-
-    for (int car_idx = 0; car_idx < sensor_fusion.size(); car_idx++) {
-      json car_data = sensor_fusion[car_idx];
-      int id = car_data[0];
-      double target_x = car_data[1];
-      double target_y = car_data[2];
-      double target_vx = car_data[3];
-      double target_vy = car_data[4];
-      double target_s = car_data[5];
-      double target_d = car_data[6];
-
-      // (Assume vehicle stay in the same lane with same speed,
-      // use absolue speed as frenet s speed
-      double target_speed_s = sqrt(target_vx * target_vx + target_vy * target_vy);
-      double target_future_s = target_s + target_speed_s * delta_t;
-      double s_distance = s_dist(car_s, target_future_s);
-      if (abs(car_d - target_d) < 3.0 && (0.0 < s_distance && s_distance < 5.0)) {
-        std::cout << "will kiss car " << id << " at time " << delta_t << std::endl;
-        std::cout << "future car_s:" << car_s << " target_s: " << target_future_s << std::endl;
-        return 1.0;
-      }
-    }
-  }
-  return 0.0;
-}
 
 // Binary cost function that checks whether the car breaks the speed limit
 double speed_cost(vector<deque<double>> traj) {
@@ -662,7 +630,7 @@ vector<vector<vector<double>>> enumerate_coeffs_combs(
 
 // check whether the JMT coefficients will break the car limits
 // within check_duration
-bool check_is_JMT_good(vector<double> jmt_coeffs, double check_duration) {
+bool check_is_d_JMT_good(vector<double> jmt_coeffs, double check_duration) {
   auto v_coeffs = derivative(jmt_coeffs);
   auto a_coeffs = derivative(v_coeffs);
   for (double t = TIME_STEP; t <= check_duration; t += TIME_STEP) {
@@ -674,6 +642,22 @@ bool check_is_JMT_good(vector<double> jmt_coeffs, double check_duration) {
   }
   return true;
 }
+
+// check whether the JMT coefficients will break the car limits
+// within check_duration
+bool check_is_s_JMT_good(vector<double> jmt_coeffs, double check_duration) {
+  auto v_coeffs = derivative(jmt_coeffs);
+  auto a_coeffs = derivative(v_coeffs);
+  for (double t = TIME_STEP; t <= check_duration; t += TIME_STEP) {
+    double v = poly_eval(t, v_coeffs);
+    double a = abs(poly_eval(t, a_coeffs));
+    if (v > SPEED_LIMIT || v < 0.0 || a > MAX_ACC) {
+      return false;
+    }
+  }
+  return true;
+}
+
 
 vector<vector<double>> generate_trajectory(
     const json &car, const json &sensor_fusion,
@@ -763,9 +747,13 @@ vector<vector<double>> generate_trajectory(
       double max_speed = min(SPEED_LIMIT, start_s_d + 20.0);
       for (double target_speed = min_speed; target_speed < max_speed; target_speed += 2.5) {
         auto try_end_s = {end_s, target_speed, duration};
+        std::cout << "target_speed: " << target_speed;
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
-        if (check_is_JMT_good(s_coeffs, duration)){
+        if (check_is_s_JMT_good(s_coeffs, duration)){
           possible_s_coeffs.push_back(s_coeffs);
+          std::cout << " good\n";
+        } else {
+          std::cout << " invalid\n";
         }
       }
     }
@@ -784,7 +772,7 @@ vector<vector<double>> generate_trajectory(
     for (double duration = (base_duration - 0.5); duration <= (base_duration + 0.5); duration += 0.2) {
       vector<double> try_end_d = {target_d, target_d_speed, 0.0};
       auto d_coeffs = JMT(start_d_config, try_end_d, duration);
-      if (check_is_JMT_good(d_coeffs, duration)) {
+      if (check_is_d_JMT_good(d_coeffs, duration)) {
         possible_d_coeffs.push_back(d_coeffs);
       }
     }
@@ -815,11 +803,16 @@ vector<vector<double>> generate_trajectory(
 
         vector<double> try_end_s = {start_s + dist_ahead, target_v, 0.0};
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
-        bool is_traj_good = check_is_JMT_good(s_coeffs, duration);
+        bool is_traj_good = check_is_s_JMT_good(s_coeffs, duration);
         if (is_traj_good) {
           possible_s_coeffs.push_back(s_coeffs);
         }
       }
+    }
+    if (possible_s_coeffs.size() == 0) {
+      std::cout << "failed to generate trajectory\n";
+      std::cout << "start config:\n";
+      std::cout << "start_s" << start_s << " start_v:" << start_s_d << std::endl;
     }
 
     int target_lane = get_lane(start_d);
@@ -830,7 +823,7 @@ vector<vector<double>> generate_trajectory(
     for (double duration = (base_duration - 1.0); duration <= (base_duration + 1.0); duration += 1.0) {
       vector<double> try_end_d = {target_d, target_d_speed, 0.0};
       auto d_coeffs = JMT(start_d_config, try_end_d, duration);
-      if (check_is_JMT_good(d_coeffs, duration)) {
+      if (check_is_d_JMT_good(d_coeffs, duration)) {
         possible_d_coeffs.push_back(d_coeffs);
       }
     }
@@ -860,9 +853,6 @@ vector<vector<double>> generate_trajectory(
     }
     predictions.push_back(vehicle_prediction);
   }
-  std::cout << "predictions.size():" << predictions.size() << std::endl;
-  std::cout << "predictions[0].size():" << predictions[0].size() << std::endl;
-  std::cout << "predictions[0][0].size():" << predictions[0][0].size() << std::endl;
 
 
   // Try to evaluate the cost of different variations
@@ -900,7 +890,7 @@ vector<vector<double>> generate_trajectory(
     double cost = 0.0;
     auto trajectory = {next_s_vals, next_d_vals};
     // TODO(Olala): calculate cost
-    cost += 1000.0 * new_collision_cost(trajectory, predictions);
+    cost += 1000.0 * collision_cost(trajectory, predictions);
     cost += 50.0 * speed_cost(trajectory);
 
     if (cost < min_cost) {
