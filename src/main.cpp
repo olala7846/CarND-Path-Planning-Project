@@ -548,6 +548,34 @@ double max_acceleration_cost(vector<deque<double>> traj) {
   return 0.0;
 }
 
+double new_collision_cost(vector<deque<double>> traj, vector<vector<vector<double>>> predictions) {
+  auto traj_s = traj[0];
+  auto traj_d = traj[1];
+  assert(predictions[0].size() == traj_s.size());
+
+  for (int v = 0; v < predictions.size(); v++) {
+    auto target_prediciton = predictions[v];
+    for (int i = 0; i < traj_s.size(); i++) {
+      // our car is named "eagle"
+      double eagle_s = traj_s[i];
+      double eagle_d = traj_d[i];
+
+      auto target_pos = target_prediciton[i];
+      auto target_s = target_pos[0];
+      auto target_d = target_pos[1];
+
+      if (abs(eagle_d - target_d) < 3.0) {
+        double s_distance = s_dist(eagle_s, target_s);
+        if (abs(s_distance) < 5.0) { // will collide
+          std::cout << "Will collision\n";
+          return 1.0;
+        }
+      }
+    }
+  }
+  return 0.0;
+}
+
 // Binary cost funciton for car collision detection
 double collision_cost(vector<deque<double>> traj, const json &sensor_fusion) {
   auto traj_s = traj[0];
@@ -661,9 +689,6 @@ vector<vector<double>> generate_trajectory(
   double end_path_s = car["end_path_s"];
   double end_path_d = car["end_path_d"];
 
-  // Save all possible frenet trajectories here cad select
-  // the one with min cost
-  vector<vector<deque<double>>> frenet_trajectories;
 
   // setup start config
   double start_s, start_s_d, start_s_dd;
@@ -811,11 +836,43 @@ vector<vector<double>> generate_trajectory(
     }
   }
 
-  // Try different end configs with very_constraints()
+  int total_stpes = PREDICT_HORIZON / TIME_STEP;
+
+  // Calculate future sensor fusion for costs
+  // prediction[vehicle_id][i] = {s, d};
+  vector<vector<vector<double>>> predictions;
+  for (int v = 0; v < sensor_fusion.size(); v++) {
+
+    json vehicle_data = sensor_fusion[v];
+    int vehicle_id = vehicle_data[0];
+    double vehicle_x = vehicle_data[1];
+    double vehicle_y = vehicle_data[2];
+    double vehicle_vx = vehicle_data[3];
+    double vehicle_vy = vehicle_data[4];
+    double vehicle_s = vehicle_data[5];
+    double vehicle_d = vehicle_data[6];
+
+    double vehicle_speed = sqrt(vehicle_vx * vehicle_vx + vehicle_vy * vehicle_vy);
+    vector<vector<double>> vehicle_prediction;
+    for (int i = 0; i < total_stpes; i++) {
+      vehicle_s = vehicle_s + vehicle_speed * TIME_STEP;
+      vehicle_prediction.push_back({vehicle_s, vehicle_d});
+    }
+    predictions.push_back(vehicle_prediction);
+  }
+  std::cout << "predictions.size():" << predictions.size() << std::endl;
+  std::cout << "predictions[0].size():" << predictions[0].size() << std::endl;
+  std::cout << "predictions[0][0].size():" << predictions[0][0].size() << std::endl;
+
+
+  // Try to evaluate the cost of different variations
+  double min_cost = 1e10;
+  vector<deque<double>> best_traj;
+
   auto combinations = enumerate_coeffs_combs(possible_s_coeffs, possible_d_coeffs);
   assert(combinations.size() > 0);
-  for (int cid = 0; cid < combinations.size(); cid++) {
-    auto a_comb = combinations[cid];
+  for (int c = 0; c < combinations.size(); c++) {
+    auto a_comb = combinations[c];
     auto s_coeffs = a_comb[0];
     auto d_coeffs = a_comb[1];
 
@@ -828,10 +885,10 @@ vector<vector<double>> generate_trajectory(
       next_d_vals.push_back(prev_d_vals[i]);
     }
 
-    int prev_step_size = prev_s_vals.size();
+    int num_prev_steps = prev_s_vals.size();
     int total_stpes = PREDICT_HORIZON / TIME_STEP;
 
-    for (int i = 0; (i + prev_step_size) <= total_stpes; i++) {
+    for (int i = 0; (i + num_prev_steps) < total_stpes; i++) {
       double t = (i + 1) * TIME_STEP;
       double s = poly_eval(t, s_coeffs);
       double d = poly_eval(t, d_coeffs);
@@ -840,32 +897,23 @@ vector<vector<double>> generate_trajectory(
       next_d_vals.push_back(d);
     }
 
-    vector<deque<double>> a_trajectory = {next_s_vals, next_d_vals};
-    frenet_trajectories.push_back(a_trajectory);
-  }
-
-  // Evaluate trajectory cost
-  int best_trajectory_idx = 0;
-  double min_cost = 1e10;
-  for (int i = 0; i < frenet_trajectories.size(); i++) {
-    auto trajectory = frenet_trajectories[i];
     double cost = 0.0;
-    cost += 1000.0 * collision_cost(trajectory, sensor_fusion);
-    // cost += 1000.0 * max_acceleration_cost(trajectory);
-    cost += 500.0 * speed_cost(trajectory);
-    // cost += 1.0 * s_diff_cost(trajectory, end_s);
-    // TODO(Olala): target s diff
-    // TODO(Olala): target v diff
-    // TODO(Olala): steering angle check
+    auto trajectory = {next_s_vals, next_d_vals};
+    // TODO(Olala): calculate cost
+    cost += 1000.0 * new_collision_cost(trajectory, predictions);
+    cost += 50.0 * speed_cost(trajectory);
 
-    if(cost < min_cost) {
-      best_trajectory_idx = i;
+    if (cost < min_cost) {
       min_cost = cost;
+      best_traj.clear();
+      best_traj.push_back(next_s_vals);
+      best_traj.push_back(next_d_vals);
     }
   }
 
+
   // std::cout << "best traj:" << best_trajectory_idx << " cost:" << min_cost << std::endl;
-  auto best_trajectory = frenet_trajectories[best_trajectory_idx];
+  auto best_trajectory = best_traj;
 
   // save frenet trajectory for next time
   auto next_s_vals = best_trajectory[0];
