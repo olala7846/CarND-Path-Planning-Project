@@ -612,6 +612,18 @@ double speed_cost(vector<deque<double>> traj) {
   return (max_speed_cost + min_speed_cost) / 2.0;
 }
 
+double d_offset_cost(vector<deque<double>> traj) {
+  auto traj_s = traj[0];
+  auto traj_d = traj[1];
+  int traj_size = traj_s.size();
+  double total_offset = 0.0;
+  for (int i = 0; i < traj_size; i++) {
+    double d = traj_d[i];
+    total_offset += abs(fmod(d, 4.0) - 2.0) / 2.0;
+  }
+  return total_offset / traj_size;
+}
+
 vector<vector<vector<double>>> enumerate_coeffs_combs(
     vector<vector<double>> possible_s_coeffs,
     vector<vector<double>> possible_d_coeffs) {
@@ -747,13 +759,9 @@ vector<vector<double>> generate_trajectory(
       double max_speed = min(SPEED_LIMIT, start_s_d + 20.0);
       for (double target_speed = min_speed; target_speed < max_speed; target_speed += 2.5) {
         auto try_end_s = {end_s, target_speed, duration};
-        std::cout << "target_speed: " << target_speed;
         auto s_coeffs = JMT(start_s_config, try_end_s, duration);
         if (check_is_s_JMT_good(s_coeffs, duration)){
           possible_s_coeffs.push_back(s_coeffs);
-          std::cout << " good\n";
-        } else {
-          std::cout << " invalid\n";
         }
       }
     }
@@ -766,11 +774,11 @@ vector<vector<double>> generate_trajectory(
     }
     double target_d = 2.0 + 4.0 * target_lane;
     std::cout << "target lane:" << target_lane << ", target_d:" << target_d << std::endl;
-    double base_duration = 4.0;
+    double duration = 4.0;
     double target_d_speed = 0.0;
 
-    for (double duration = (base_duration - 0.5); duration <= (base_duration + 0.5); duration += 0.2) {
-      vector<double> try_end_d = {target_d, target_d_speed, 0.0};
+    for (double d_offset = -0.4; d_offset <= 0.4; d_offset += 0.2) {
+      vector<double> try_end_d = {target_d + d_offset, target_d_speed, 0.0};
       auto d_coeffs = JMT(start_d_config, try_end_d, duration);
       if (check_is_d_JMT_good(d_coeffs, duration)) {
         possible_d_coeffs.push_back(d_coeffs);
@@ -817,11 +825,11 @@ vector<vector<double>> generate_trajectory(
 
     int target_lane = get_lane(start_d);
     double target_d = 2.0 + 4.0 * target_lane;
-    double base_duration = 4.0;
+    double duration = 4.0;
     double target_d_speed = 0.0;
 
-    for (double duration = (base_duration - 1.0); duration <= (base_duration + 1.0); duration += 1.0) {
-      vector<double> try_end_d = {target_d, target_d_speed, 0.0};
+    for (double d_offset = -0.4; d_offset <= 0.4; d_offset += 0.2) {
+      vector<double> try_end_d = {target_d + d_offset, target_d_speed, 0.0};
       auto d_coeffs = JMT(start_d_config, try_end_d, duration);
       if (check_is_d_JMT_good(d_coeffs, duration)) {
         possible_d_coeffs.push_back(d_coeffs);
@@ -892,6 +900,7 @@ vector<vector<double>> generate_trajectory(
     // TODO(Olala): calculate cost
     cost += 1000.0 * collision_cost(trajectory, predictions);
     cost += 50.0 * speed_cost(trajectory);
+    cost += 20.0 * d_offset_cost(trajectory);
 
     if (cost < min_cost) {
       min_cost = cost;
