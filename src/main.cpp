@@ -745,7 +745,7 @@ vector<vector<double>> generate_trajectory(
     double lv_speed = sqrt(lv_vx * lv_vx + lv_vy * lv_vy);
     double target_v = min(SPEED_LIMIT * 0.9, lv_speed);
     double REACTION_TIME = 1.0;
-    double safe_dist_to_lv = target_v * REACTION_TIME + 7.0;
+    double safe_dist_to_lv = target_v * REACTION_TIME + 10.0;
 
     for (double duration = 1.0; duration <= 10.0; duration += 0.5) {
       for (double target_dist_ahead = safe_dist_to_lv; target_dist_ahead <= safe_dist_to_lv + 5.0; target_dist_ahead += 2.5) {
