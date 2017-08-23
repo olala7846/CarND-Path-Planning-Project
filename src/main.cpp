@@ -495,59 +495,6 @@ vector<double> get_traj_end_config(deque<double> traj) {
   return {x2, v2, a2};
 }
 
-// probability density function
-double pdf(double mean, double sigma, double x) {
-  double sig2 = sigma * sigma;
-  double delta = x - mean;
-  return 1.0 / (2.0 * M_PI * sig2) * exp(delta * delta / 2.0 / sig2);
-}
-
-// calculate s cost
-double s_diff_cost(vector<deque<double>> traj, const vector<double> end_config) {
-  auto traj_s = traj[0];
-  auto traj_d = traj[1];
-
-  auto traj_end_config = get_traj_end_config(traj_s);
-  vector<double> sigma_s = {10.0, 4.0, 2.0};
-
-  double cost = 0.0;
-  for(int i = 0 ; i < 3; i++) {
-    double actual = traj_end_config[i];
-    double expected = end_config[i];
-    double sigma = sigma_s[i];
-    double diff = abs(expected - actual);
-    cost += erf(diff / sigma);
-  }
-
-  return cost;
-}
-
-// Binary cost funciton for max acceleration
-double max_acceleration_cost(vector<deque<double>> traj) {
-  auto traj_s = traj[0];
-  auto traj_d = traj[1];
-  int traj_size = traj_s.size();
-  for(int i = 2; i < traj_size; i++) {
-    double s2 = traj_s[i];
-    double s1 = traj_s[i - 1];
-    double s0 = traj_s[i - 2];
-    // handle edge case around max_s
-    if (s1 < s0)
-      s1 += max_s;
-    if (s2 < s1)
-      s2 += max_s;
-
-    double v1 = (s1 - s0) / TIME_STEP;
-    double v2 = (s2 - s1) / TIME_STEP;
-    double a2 = (v2 / v1) / TIME_STEP;
-    if (a2 > MAX_ACC) {
-      std::cout << "max accleration exceed\n";
-      return 1.0;
-    }
-  }
-  return 0.0;
-}
-
 double collision_cost(vector<deque<double>> traj, vector<vector<vector<double>>> predictions) {
   auto traj_s = traj[0];
   auto traj_d = traj[1];
@@ -798,7 +745,7 @@ vector<vector<double>> generate_trajectory(
     double lv_speed = sqrt(lv_vx * lv_vx + lv_vy * lv_vy);
     double target_v = min(SPEED_LIMIT * 0.9, lv_speed);
     double REACTION_TIME = 0.5;
-    double safe_dist_to_lv = target_v * REACTION_TIME + 5.0;
+    double safe_dist_to_lv = target_v * REACTION_TIME + 10.0;
 
     for (double duration = 1.0; duration <= 10.0; duration += 0.5) {
       for (double target_dist_ahead = safe_dist_to_lv; target_dist_ahead <= safe_dist_to_lv + 5.0; target_dist_ahead += 2.5) {
