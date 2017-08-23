@@ -659,10 +659,12 @@ bool check_is_d_JMT_good(vector<double> jmt_coeffs, double check_duration) {
 bool check_is_s_JMT_good(vector<double> jmt_coeffs, double check_duration) {
   auto v_coeffs = derivative(jmt_coeffs);
   auto a_coeffs = derivative(v_coeffs);
+  auto jerk_coeffs = derivative(a_coeffs);
   for (double t = TIME_STEP; t <= check_duration; t += TIME_STEP) {
     double v = poly_eval(t, v_coeffs);
     double a = abs(poly_eval(t, a_coeffs));
-    if (v > SPEED_LIMIT || v < 0.0 || a > MAX_ACC) {
+    double jerk = abs(poly_eval(t, jerk_coeffs));
+    if (v > SPEED_LIMIT || v < 0.0 || a > MAX_ACC || jerk > MAX_JERK) {
       return false;
     }
   }
