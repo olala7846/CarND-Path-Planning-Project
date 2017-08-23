@@ -567,9 +567,9 @@ double collision_cost(vector<deque<double>> traj, vector<vector<vector<double>>>
       if (abs(eagle_d - target_d) < 3.0) {
         double s_distance = s_dist(eagle_s, target_s);
         if (abs(s_distance) < 5.0) { // will collide
-          std::cout << "Will kiss: \n";
-          std::cout << "i:" << i << ", eagle_s:" << eagle_s << ", eagle_d" << eagle_d;
-          std::cout << ", target_s:" << target_s << ", target_d" << target_d << std::endl;
+          // std::cout << "Will kiss: \n";
+          // std::cout << "i:" << i << ", eagle_s:" << eagle_s << ", eagle_d" << eagle_d;
+          // std::cout << ", target_s:" << target_s << ", target_d" << target_d << std::endl;
           return 1.0;
         }
       }
@@ -578,9 +578,8 @@ double collision_cost(vector<deque<double>> traj, vector<vector<vector<double>>>
   return 0.0;
 }
 
-
 // Binary cost function that checks whether the car breaks the speed limit
-double speed_cost(vector<deque<double>> traj) {
+double speed_range_cost(vector<deque<double>> traj) {
   auto traj_s = traj[0];
   auto traj_d = traj[1];
   int traj_size = traj_s.size();
@@ -602,7 +601,7 @@ double speed_cost(vector<deque<double>> traj) {
   double min_speed_cost = 0.0;
   double max_speed_cost = 0.0;
   if (min_speed < target_speed) {
-    min_speed_cost = min_speed / target_speed;
+    min_speed_cost = 1.0 - min_speed / target_speed;
   }
 
   if (max_speed > target_speed) {
@@ -629,15 +628,15 @@ vector<vector<vector<double>>> enumerate_coeffs_combs(
     vector<vector<double>> possible_d_coeffs) {
 
   std::cout << "s:" << possible_s_coeffs.size() << " d:" << possible_d_coeffs.size() << std::endl;
-  vector<vector<vector<double>>> cominations;
+  vector<vector<vector<double>>> combinations;
   for (int i = 0; i < possible_s_coeffs.size(); i++) {
     for (int j = 0; j < possible_d_coeffs.size(); j++) {
       auto s_coeffs = possible_s_coeffs[i];
       auto d_coeffs = possible_d_coeffs[j];
-      cominations.push_back({s_coeffs, d_coeffs});
+      combinations.push_back({s_coeffs, d_coeffs});
     }
   }
-  return cominations;
+  return combinations;
 }
 
 // check whether the JMT coefficients will break the car limits
@@ -751,21 +750,17 @@ vector<vector<double>> generate_trajectory(
       current_car_state == lane_change_left ||
       current_car_state == lane_change_right) {
 
-    double end_s = start_s + 30.0;
-    double min_duration = 1.0;
-    double max_duration = 5.0;
-    for (double duration = min_duration; duration <= max_duration; duration += 0.5) {
-      double min_speed = max(0.0, start_s_d - 20.0);
-      double max_speed = min(SPEED_LIMIT, start_s_d + 20.0);
-      for (double target_speed = min_speed; target_speed < max_speed; target_speed += 2.5) {
-        auto try_end_s = {end_s, target_speed, duration};
-        auto s_coeffs = JMT(start_s_config, try_end_s, duration);
-        if (check_is_s_JMT_good(s_coeffs, duration)){
-          possible_s_coeffs.push_back(s_coeffs);
-        }
+    double end_s = start_s + 100.0;
+    double min_duration = 0.1;
+    double max_duration = 20.0;
+    double target_speed = SPEED_LIMIT * 0.9;
+    for (double duration = min_duration; duration <= max_duration; duration += 0.25) {
+      auto try_end_s = {end_s, target_speed, 0.0};
+      auto s_coeffs = JMT(start_s_config, try_end_s, duration);
+      if (check_is_s_JMT_good(s_coeffs, duration)){
+        possible_s_coeffs.push_back(s_coeffs);
       }
     }
-
 
     int target_lane = get_lane(start_d);
     if (current_car_state == lane_change_left ||
@@ -874,6 +869,7 @@ vector<vector<double>> generate_trajectory(
     auto s_coeffs = a_comb[0];
     auto d_coeffs = a_comb[1];
 
+
     deque<double> next_s_vals;
     deque<double> next_d_vals;
 
@@ -899,7 +895,7 @@ vector<vector<double>> generate_trajectory(
     auto trajectory = {next_s_vals, next_d_vals};
     // TODO(Olala): calculate cost
     cost += 1000.0 * collision_cost(trajectory, predictions);
-    cost += 50.0 * speed_cost(trajectory);
+    cost += 50.0 * speed_range_cost(trajectory);
     cost += 20.0 * d_offset_cost(trajectory);
 
     if (cost < min_cost) {
@@ -925,7 +921,6 @@ vector<vector<double>> generate_trajectory(
   vector<double> next_x_vals;
   vector<double> next_y_vals;
 
-  // std::cout << "frenet to cartesian\n";
   for(int i=0; i < next_s_vals.size(); i++) {
     double s = next_s_vals[i];
     double d = next_d_vals[i];
